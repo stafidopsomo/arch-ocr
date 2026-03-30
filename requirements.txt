@@ -1,14 +1,3 @@
-pdf2image
-Pillow
-opencv-python
-pytesseract
-numpy
-easyocr
-reportlab
-pypdf
-fastapi
-uvicorn
-python-multipart
-jinja2
-ollama
-google-cloud-vision
+requests
+python-dotenv
+PyMuPDF

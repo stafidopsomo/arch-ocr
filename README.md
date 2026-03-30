@@ -1,216 +1,136 @@
 # arch-ocr
 
-Local OCR pipeline for Greek property documents (Ηλεκτρονική Ταυτότητα Κτιρίου).
+This repository is now a focused CLI workflow:
 
-The pipeline processes one or more scanned PDFs and generates one combined PDF report.
+- Send a PDF page (for example `test_inputs/example_page1.pdf`) to a vision LLM.
+- Receive model feedback or structured extraction output.
 
-- Page 1 contains an HTK summary table (best extracted values and page references).
-- Remaining pages contain side-by-side page image and extracted text.
+Legacy OCR and web app paths are no longer the active workflow.
 
-## Current Status
+## Current Flow
 
-- End-to-end pipeline runs locally on macOS.
-- Multi-engine extraction is implemented: ocr, vlm, vision, hybrid, hybrid_vision, hybrid_all.
-- VLM and Vision only modes now skip Tesseract OCR pre-processing.
-- Vision-only mode now fails fast on API errors instead of silently continuing with empty text.
-- Web UI supports per-job engine and VLM model selection.
-- Output format is PDF.
+- Script: `ocr_script.py`
+- Pipeline: PDF -> rendered page image(s) -> OpenRouter vision model -> markdown + optional raw JSON
+- Default output path: `output/<pdf_stem>_feedback.md`
 
-### Hardware Constraints For Local VLM
+## Requirements
 
-- Running larger vision models on 16GB systems can trigger out-of-memory failures on full-resolution pages.
-- Use single-page tests, downscale input pages, or smaller models such as glm-ocr and qwen3.5:0.8b.
+- Python 3.10+
+- OpenRouter API key
 
-Important quality note:
+Dependencies in `requirements.txt`:
 
-- Greek glyph rendering in the generated PDF text layer still needs font-path improvement.
+- requests
+- python-dotenv
+- PyMuPDF
 
-## Scope
-
-In scope:
-
-- Local OCR of scanned Greek property PDFs
-- HTK field extraction for key identity and property fields
-- Local web upload workflow for a single tester
-- Deterministic PDF output artifact for review
-
-Out of scope (for now):
-
-- Production authentication and multi-tenant security
-- Cloud hosting and autoscaling
-- Guaranteed handwritten-text accuracy without review
-- Zero-touch legal-grade automation
-
-## Extracted Fields
-
-| Field | Greek |
-| ----- | ----- |
-| First name | Όνομα |
-| Last name | Επώνυμο |
-| Father's name | Πατρώνυμο |
-| Mother's name | Μητρώνυμο |
-| Year of birth | Έτος γέννησης |
-| Place of birth | Τόπος γέννησης |
-| Address | Διεύθυνση |
-| Property number | Αριθμός ακινήτου |
-| Property use | Χρήση ακινήτου |
-| Number of floors | Αριθμός ορόφων |
-| ID card number | ΑΔΤ |
-| Phone | Τηλέφωνο |
-| Tax number | ΑΦΜ |
-
-## Architecture
-
-Core pipeline in ocr_script.py:
-
-1. Resolve file and folder inputs into PDF files.
-2. Convert PDF pages to images.
-3. For OCR-enabled modes: preprocess images and run Tesseract.
-4. Run engine-specific extraction path (regex, local VLM, cloud Vision, or hybrid).
-5. Build combined PDF report with summary table and page evidence.
-
-Local web app in webapp.py:
-
-- FastAPI app with upload form and local background thread processing
-- JSON job store in jobs
-- Upload staging in uploads
-- Output reports in output
-- Download endpoint for generated PDF artifacts
-
-## Project Layout
-
-- ocr_script.py: CLI pipeline and PDF report generation
-- webapp.py: local web app and job execution
-- templates/index.html: local web UI
-- test_inputs: sample input PDFs
-- output: generated reports
-- uploads: web-upload staging
-- jobs: job metadata and logs
-- ocr_cache: OCR cache by file hash
-
-## Setup
-
-### macOS
+## Quick Start (WSL / Ubuntu)
 
 ```bash
-brew install tesseract tesseract-lang poppler
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip
+
 python3 -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Linux / WSL (Ubuntu)
+Create your env file:
 
 ```bash
-sudo apt-get install -y tesseract-ocr tesseract-ocr-ell tesseract-ocr-grc poppler-utils
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+cp .env.example .env
 ```
 
-### Windows
+Edit `.env`:
 
-See SETUP.md for Windows setup and PATH configuration.
+```env
+OPENROUTER_API_KEY=your_openrouter_key_here
+OPENROUTER_MODEL=google/gemma-3-4b-it:free
+```
 
-## CLI Usage
+`OPENROUTER_MODEL` is optional.
 
-Single PDF:
+## Basic Run
 
 ```bash
-./.venv/bin/python ocr_script.py test_inputs/example.pdf
+./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf
 ```
 
-Custom output path:
+Saves feedback to:
+
+- `output/example_page1_feedback.md`
+
+## Prompt While Sending The File
+
+Yes, you can pass a custom prompt with `--prompt`.
+
+Example: handwritten-only extraction with strict JSON output.
 
 ```bash
-./.venv/bin/python ocr_script.py test_inputs/example.pdf --output output/result.pdf
+PROMPT=$(cat <<'EOF'
+Look only for handwritten content on the page.
+Ignore printed/typed text unless it helps locate a handwritten field.
+Return ONLY valid JSON with this exact schema:
+{
+  "handwritten_fields": [
+    {
+      "label": "short field name",
+      "value": "detected handwritten value",
+      "confidence": "high|medium|low",
+      "evidence": "short quote or location hint"
+    }
+  ],
+  "notes": ["uncertainty notes"]
+}
+If no handwritten content is found, return {"handwritten_fields":[],"notes":["none"]}.
+Do not include markdown.
+EOF
+)
+
+./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf \
+  --model qwen/qwen3-vl-8b-instruct \
+  --prompt "$PROMPT" \
+  --output output/example_page1_handwritten_feedback.md \
+  --raw-output output/example_page1_handwritten_raw.json
 ```
 
-All PDFs in folder:
+## Model Options
+
+Free (can be rate-limited):
+
+- `google/gemma-3-4b-it:free` (default)
+- `google/gemma-3-12b-it:free`
+- `google/gemma-3-27b-it:free`
+- `nvidia/nemotron-nano-12b-v2-vl:free`
+
+Low-cost paid options:
+
+- `qwen/qwen3-vl-8b-instruct`
+- `meta-llama/llama-3.2-11b-vision-instruct`
+- `google/gemini-2.0-flash-lite-001`
+- `amazon/nova-lite-v1`
+
+Set a model per run:
 
 ```bash
-./.venv/bin/python ocr_script.py test_inputs/
+./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --model qwen/qwen3-vl-8b-instruct
 ```
 
-Clear OCR cache and rerun:
+## OpenRouter Troubleshooting
 
-```bash
-rm -rf ocr_cache/*
-./.venv/bin/python ocr_script.py test_inputs/example.pdf
-```
+- `404 No endpoints found`: model is unavailable or retired. Switch to another model.
+- `429 rate-limited`: common on free models. Retry or use a paid model.
+- weak extraction quality: use stricter prompt + higher quality model (for example `qwen/qwen3-vl-8b-instruct` or higher).
 
-Prepare a single-page input for fast model checks:
+## Local Ollama Note
 
-```bash
-python -c "from pypdf import PdfReader, PdfWriter; r=PdfReader('test_inputs/example.pdf'); w=PdfWriter(); w.add_page(r.pages[0]); f=open('test_inputs/example_page1.pdf','wb'); w.write(f); f.close()"
-```
+Current script path is OpenRouter-only.
 
-Engine mode examples:
+Why local chat apps often fail with attachments:
 
-```bash
-ollama pull glm-ocr
+- many local models are text-only and cannot read images;
+- even vision models require image-aware API payloads, not plain text chat;
+- some chat UIs silently degrade image input when model/tooling is not vision-compatible.
 
-# OCR only
-./.venv/bin/python ocr_script.py test_inputs/example.pdf --engine ocr
-
-# VLM only
-./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --engine vlm --vlm-model glm-ocr
-
-# Vision only (fails fast on API configuration errors)
-./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --engine vision
-
-# OCR + VLM fallback
-./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --engine hybrid --vlm-model glm-ocr
-
-# OCR + Vision fallback
-./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --engine hybrid_vision
-
-# OCR + VLM + Vision
-./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --engine hybrid_all --vlm-model glm-ocr
-```
-
-## Local Web App
-
-Run locally:
-
-```bash
-export ARCH_OCR_ENGINE=ocr
-export ARCH_OCR_VLM_MODEL=qwen2.5vl:7b
-export GOOGLE_API_KEY="YOUR_NEW_GOOGLE_VISION_KEY"
-./.venv/bin/python -m uvicorn webapp:app --reload
-```
-
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
-
-Current web app behavior:
-
-- Engine and VLM model can be selected per job in the form.
-- Status and metrics are visible in the jobs table.
-- Download link is available when processing completes.
-
-## Google Vision Notes
-
-For optional cloud setup details, see GOOGLE_VISION_SETUP.md.
-
-Known blocker:
-
-- HTTP 403 with reason API_KEY_SERVICE_BLOCKED indicates a Google Cloud project or key configuration issue.
-- This is not a repository code bug.
-
-Security note:
-
-- Never commit API keys.
-- If a key is exposed in logs or chat history, rotate it immediately.
-
-## Known Limitations
-
-- Handwritten and stamp-overlapped regions remain difficult.
-- Regex extraction can miss fields in noisy OCR outputs.
-- Greek text rendering in PDF text blocks still needs improvement.
-
-## Next Recommended Work
-
-1. Embed a Greek-capable font in ReportLab output.
-2. Add extraction confidence and manual-review flags.
-3. Add an optional page-range CLI flag for faster benchmarking.
-4. Add automated tests for each engine mode and fallback behavior.
+If needed, local Ollama support can be added as a second provider path.

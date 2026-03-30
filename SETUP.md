@@ -1,145 +1,90 @@
-# Setup Guide - OCR HTK Tool (Windows)
+# Setup Guide (WSL)
 
-This guide installs and verifies the local OCR pipeline on Windows.
+This is the final setup path for the LLM-only workflow.
 
-## Requirements
+## 1. Install System Packages
 
-Install these first:
-
-1. Python 3.10+
-2. Tesseract OCR with Greek language data
-3. Poppler for Windows (required by pdf2image)
-
-## Step 1 - Install Tesseract OCR
-
-1. Download installer from [UB Mannheim Tesseract builds](https://github.com/UB-Mannheim/tesseract/wiki).
-
-2. During install:
-
-   - Include Greek language data (ell and grc)
-   - Default path is usually C:\Program Files\Tesseract-OCR\
-
-3. Add to PATH:
-
-   - Open Environment Variables
-   - Edit system Path
-   - Add C:\Program Files\Tesseract-OCR
-
-4. Verify in a new terminal:
-
-```powershell
-tesseract --version
-tesseract --list-langs
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip
 ```
 
-Expected language list includes:
-
-- ell
-- grc
-
-## Step 2 - Install Poppler
-
-1. Download build from [poppler-windows releases](https://github.com/oschwartz10612/poppler-windows/releases).
-
-2. Extract to an example path:
-
-   - C:\poppler\
-
-3. Add Poppler bin folder to PATH:
-
-   - C:\poppler\Library\bin
-
-4. Verify:
-
-```powershell
-pdftoppm -v
-```
-
-## Step 3 - Create Virtual Environment And Install Dependencies
+## 2. Create Virtual Environment
 
 From repository root:
 
-```powershell
-py -m venv .venv
-.\.venv\Scripts\activate
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-## Input And Output Folders
+## 3. Configure OpenRouter
 
-Recommended local workflow:
-
-- Put input PDFs in test_inputs\
-- Generated reports are written to output\
-- OCR cache is stored in ocr_cache\
-
-## CLI Usage
-
-Single PDF:
-
-```powershell
-.\.venv\Scripts\python ocr_script.py test_inputs\example.pdf
+```bash
+cp .env.example .env
 ```
 
-Single-page test input (fast local VLM benchmarking):
+Edit `.env`:
 
-```powershell
-.\.venv\Scripts\python -c "from pypdf import PdfReader, PdfWriter; r=PdfReader('test_inputs/example.pdf'); w=PdfWriter(); w.add_page(r.pages[0]); f=open('test_inputs/example_page1.pdf','wb'); w.write(f); f.close()"
+```env
+OPENROUTER_API_KEY=your_openrouter_key_here
+OPENROUTER_MODEL=google/gemma-3-4b-it:free
 ```
 
-VLM mode example:
+`OPENROUTER_API_KEY` is required.
 
-```powershell
-.\.venv\Scripts\python ocr_script.py test_inputs\example_page1.pdf --engine vlm --vlm-model glm-ocr --output output\glm_ocr_page1_test.pdf
+## 4. Run Baseline Command
+
+```bash
+./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf
 ```
 
-Vision mode example:
+Expected outputs:
 
-```powershell
-set GOOGLE_API_KEY=YOUR_NEW_GOOGLE_VISION_KEY
-.\.venv\Scripts\python ocr_script.py test_inputs\example_page1.pdf --engine vision --output output\vision_page1_test.pdf
+- terminal response
+- `output/example_page1_feedback.md`
+
+## 5. Run Handwritten-Only Extraction
+
+```bash
+PROMPT=$(cat <<'EOF'
+Look only for handwritten content on the page.
+Ignore printed/typed text unless it helps locate a handwritten field.
+Return ONLY valid JSON with this exact schema:
+{
+  "handwritten_fields": [
+    {
+      "label": "short field name",
+      "value": "detected handwritten value",
+      "confidence": "high|medium|low",
+      "evidence": "short quote or location hint"
+    }
+  ],
+  "notes": ["uncertainty notes"]
+}
+If no handwritten content is found, return {"handwritten_fields":[],"notes":["none"]}.
+Do not include markdown.
+EOF
+)
+
+./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf \
+  --model qwen/qwen3-vl-8b-instruct \
+  --prompt "$PROMPT" \
+  --output output/example_page1_handwritten_feedback.md \
+  --raw-output output/example_page1_handwritten_raw.json
 ```
 
-If executables are not on PATH:
+## 6. Model Selection Tips
 
-```powershell
-.\.venv\Scripts\python ocr_script.py test_inputs\example.pdf --tesseract-path "C:\Program Files\Tesseract-OCR\tesseract.exe" --poppler-path "C:\poppler\Library\bin"
-```
+- free default: `google/gemma-3-4b-it:free`
+- better extraction quality: `qwen/qwen3-vl-8b-instruct`
+- free models may return `429` during peak load
 
-## Output Format
+## Common Errors
 
-The script produces one PDF report:
-
-| Page | Content |
-| ---- | ------- |
-| 1 | HTK summary table with extracted values and page references |
-| 2+ | Per-page two-column layout: page image on left and extracted text on right |
-
-## Local Web App (Optional)
-
-Start:
-
-```powershell
-.\.venv\Scripts\python -m uvicorn webapp:app --reload
-```
-
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
-
-The web form now supports per-job engine and VLM model selection.
-
-## Troubleshooting
-
-| Problem | Solution |
-| ------- | -------- |
-| Tesseract not found | Add Tesseract folder to PATH or use --tesseract-path |
-| Poppler/pdfinfo not found | Add Poppler bin to PATH or use --poppler-path |
-| No PDFs found | Check input path and PDF extension |
-| VLM model fails to load | Use single-page input and a smaller local model |
-| Google Vision returns API_KEY_SERVICE_BLOCKED | Fix billing/API key restrictions in Google Cloud project |
-| Greek text looks degraded in output | Known font/rendering limitation in current PDF path |
-
-## Quality Expectation
-
-This tool is optimized for local assisted extraction, not zero-touch legal automation.
-
-Human review is still required for low-confidence fields.
+- missing key: set `OPENROUTER_API_KEY`
+- `404 No endpoints found`: model unavailable, switch `--model`
+- `429 rate-limited`: retry or use paid model
+- timeout: increase `--timeout 180`
