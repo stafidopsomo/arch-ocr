@@ -4,6 +4,10 @@ ocr_cache/
 # Output docs
 output/
 
+# Local web app runtime folders
+uploads/
+jobs/
+
 # Python
 __pycache__/
 *.py[cod]

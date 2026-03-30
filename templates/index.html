@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>arch-ocr local</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --ink: #1a2433;
+      --muted: #607088;
+      --accent: #0d6e6e;
+      --line: #d9e1ec;
+    }
+    body {
+      margin: 0;
+      font-family: "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      color: var(--ink);
+      background: radial-gradient(circle at 20% 0%, #eaf3ff 0%, var(--bg) 45%, #eef8f5 100%);
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 24px auto;
+      padding: 0 16px 36px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 8px 24px rgba(20, 34, 59, 0.06);
+      margin-bottom: 16px;
+    }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    p { margin: 4px 0; color: var(--muted); }
+    form {
+      display: grid;
+      grid-template-columns: 1fr 1fr auto;
+      gap: 10px;
+      align-items: end;
+    }
+    input, button {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      padding: 10px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    button {
+      background: var(--accent);
+      color: white;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      padding: 10px 8px;
+      vertical-align: top;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: #edf2f8;
+      color: #3b4d65;
+    }
+    .queued { background: #fff6d8; color: #765b00; }
+    .running { background: #dff1ff; color: #005688; }
+    .done { background: #ddf5e8; color: #16643d; }
+    .error { background: #ffe6e6; color: #8f1f1f; }
+    .small { font-size: 12px; color: var(--muted); }
+    @media (max-width: 900px) {
+      form { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>arch-ocr local web app</h1>
+      <p>Upload multiple PDF documents per building and generate one PDF with cross-check summary.</p>
+      <form action="/jobs" method="post" enctype="multipart/form-data">
+        <div>
+          <label>Client name</label>
+          <input type="text" name="client_name" placeholder="tester" value="tester" />
+        </div>
+        <div>
+          <label>PDF files</label>
+          <input type="file" name="files" accept=".pdf" multiple required />
+        </div>
+        <div>
+          <button type="submit">Start OCR Job</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Jobs</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Status</th>
+            <th>Client</th>
+            <th>Files</th>
+            <th>Metrics</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for job in jobs %}
+          <tr>
+            <td>{{ job.id }}</td>
+            <td><span class="badge {{ job.status }}">{{ job.status }}</span></td>
+            <td>{{ job.client_name }}</td>
+            <td>
+              {% for f in job.files %}
+              <div class="small">{{ f }}</div>
+              {% endfor %}
+            </td>
+            <td>
+              {% if job.metrics and job.status == "done" %}
+              <div class="small">inputs: {{ job.metrics.input_count }}</div>
+              <div class="small">converted: {{ job.metrics.converted_count }}</div>
+              <div class="small">pages: {{ job.metrics.page_count }}</div>
+              {% else %}
+              <span class="small">-</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if job.status == "done" %}
+                <a href="/jobs/{{ job.id }}/download">download pdf</a>
+              {% elif job.status == "error" %}
+                <span class="small">{{ job.error }}</span>
+              {% else %}
+                <span class="small">processing...</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <p class="small">Tip: refresh this page to see job updates while processing.</p>
+    </div>
+  </div>
+</body>
+</html>

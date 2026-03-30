@@ -1,35 +1,41 @@
 """
-OCR → DOCX Tool for Greek Property Documents (HTK)
+OCR → PDF Tool for Greek Property Documents (HTK)
 ===================================================
-Converts one or more scanned PDF documents into a single Word document.
+Converts one or more scanned PDF documents into a single PDF with OCR results.
 - Page 1: HTK cross-reference summary table (fields found across all documents)
-- Remaining pages: per-page table with [image | OCR text]
+- Remaining pages: per-page layout with [image | OCR text]
 
 Usage:
-    python ocr_script.py <pdf1> [pdf2] [pdf3] ...  [--output output/result.docx]
-    python ocr_script.py /path/to/folder/           [--output output/result.docx]
+    python ocr_script.py <pdf1> [pdf2] [pdf3] ...  [--output output/result.pdf]
+    python ocr_script.py /path/to/folder/           [--output output/result.pdf]
 """
 
 import argparse
+import base64
 import hashlib
+import io
 import json
 import os
 import re
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import numpy as np
 import pytesseract
-from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-from docx.shared import Inches, Pt, RGBColor
 from pdf2image import convert_from_path
 from PIL import Image
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch, cm
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, PageBreak, Spacer, Image as RLImage
+from reportlab.lib import colors
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -62,17 +68,29 @@ HTK_FIELDS = [
     ("ΑΦΜ",             [r"(?:ΑΦΜ|Α\.Φ\.Μ|αριθμ\.\s*φορ)[.\s:]*(\d{9})"]),
 ]
 
+FIELD_KEY_MAP = {
+    "Όνομα": "first_name",
+    "Επώνυμο": "last_name",
+    "Πατρώνυμο": "fathers_name",
+    "Μητρώνυμο": "mothers_name",
+    "Έτος γέννησης": "birth_year",
+    "Τόπος γέννησης": "birth_place",
+    "Διεύθυνση": "address",
+    "Αριθμός ακινήτου": "property_number",
+    "Χρήση ακινήτου": "property_use",
+    "Αριθμός ορόφων": "floor_count",
+    "ΑΔΤ": "id_card_number",
+    "Τηλέφωνο": "phone",
+    "ΑΦΜ": "tax_id",
+}
+
+KEY_FIELD_MAP = {v: k for k, v in FIELD_KEY_MAP.items()}
+
 # Flatten HTK_FIELDS so values are always lists (handle tuple vs list inconsistency)
 HTK_FIELDS = [
     (name, patterns if isinstance(patterns, list) else [patterns])
     for name, patterns in HTK_FIELDS
 ]
-
-# Colors
-HEADER_BG = RGBColor(0x1F, 0x49, 0x7D)   # dark blue
-HEADER_BG_HEX = "1F497D"
-ALT_ROW_BG = RGBColor(0xD9, 0xE1, 0xF2)  # light blue
-ALT_ROW_BG_HEX = "D9E1F2"
 
 # ---------------------------------------------------------------------------
 # Image preprocessing
@@ -193,146 +211,352 @@ def extract_htk_fields(all_page_texts: list[tuple[str, int, str]]) -> dict:
     return results
 
 
+def _empty_htk_results() -> dict:
+    return {field_name: {"value": "—", "occurrences": []} for field_name, _ in HTK_FIELDS}
+
+
+def _normalize_value(value) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        value = str(value)
+    if not isinstance(value, str):
+        return None
+    value = re.sub(r"\s+", " ", value).strip()
+    if not value:
+        return None
+    if value.lower() in {"null", "none", "unknown", "n/a", "-", "—"}:
+        return None
+    return value
+
+
+def extract_htk_fields_vlm(
+    all_pages: dict[str, list[tuple[int, Image.Image, str]]],
+    model: str,
+    progress_cb: Callable[[str], None] | None = None,
+) -> dict:
+    """Extract HTK fields from raw page images using a local Ollama vision model."""
+    try:
+        import ollama
+    except ImportError as exc:
+        raise RuntimeError("Ollama Python package is not installed. Install with: pip install ollama") from exc
+
+    def _log(message: str):
+        if progress_cb:
+            progress_cb(message)
+        else:
+            print(message)
+
+    schema = {
+        "type": "object",
+        "properties": {k: {"type": ["string", "null"]} for k in KEY_FIELD_MAP.keys()},
+        "required": list(KEY_FIELD_MAP.keys()),
+        "additionalProperties": False,
+    }
+
+    prompt = (
+        "You are an expert extractor for archival Greek property documents. "
+        "Extract only the requested fields from this single page. "
+        "If a field is missing or unclear, return null. "
+        "Do not guess. Return only valid JSON matching the schema."
+    )
+
+    value_counts = {field_name: defaultdict(int) for field_name, _ in HTK_FIELDS}
+    occurrences = {field_name: set() for field_name, _ in HTK_FIELDS}
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        for pdf_name, pages in all_pages.items():
+            for page_num, pil_img, _ in pages:
+                img_path = os.path.join(tmp_dir, f"{Path(pdf_name).stem}_page_{page_num}.jpg")
+                rgb_img = pil_img.convert("RGB")
+                rgb_img.save(img_path, "JPEG", quality=90)
+
+                _log(f"  [VLM] {model} on {Path(pdf_name).name} page {page_num}...")
+                try:
+                    response = ollama.chat(
+                        model=model,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": prompt,
+                                "images": [img_path],
+                            }
+                        ],
+                        format=schema,
+                        options={"temperature": 0},
+                    )
+                except Exception as exc:
+                    _log(f"    [WARN] VLM request failed on page {page_num}: {exc}")
+                    continue
+
+                try:
+                    content = response["message"]["content"]
+                    parsed = json.loads(content) if isinstance(content, str) else content
+                except Exception as exc:
+                    _log(f"    [WARN] Invalid VLM JSON on page {page_num}: {exc}")
+                    continue
+
+                for key, value in parsed.items():
+                    field_name = KEY_FIELD_MAP.get(key)
+                    if not field_name:
+                        continue
+                    normalized = _normalize_value(value)
+                    if not normalized:
+                        continue
+                    value_counts[field_name][normalized] += 1
+                    occurrences[field_name].add((pdf_name, page_num))
+
+    results = _empty_htk_results()
+    for field_name, _ in HTK_FIELDS:
+        if value_counts[field_name]:
+            best_value = max(value_counts[field_name], key=value_counts[field_name].get)
+            results[field_name]["value"] = best_value
+        results[field_name]["occurrences"] = sorted(occurrences[field_name], key=lambda x: (x[0], x[1]))
+    return results
+
+
+def _google_vision_text_from_bytes(image_bytes: bytes, api_key: str | None = None) -> str:
+    """Extract text from an image using Google Vision (API key REST or ADC SDK path)."""
+    if api_key:
+        url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
+        payload = {
+            "requests": [
+                {
+                    "image": {"content": base64.b64encode(image_bytes).decode("ascii")},
+                    "features": [{"type": "DOCUMENT_TEXT_DETECTION"}],
+                }
+            ]
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"Google Vision HTTP {exc.code}: {details}") from exc
+
+        responses = data.get("responses", [])
+        if not responses:
+            return ""
+        first = responses[0]
+        if "error" in first:
+            raise RuntimeError(f"Google Vision error: {first['error']}")
+        return first.get("fullTextAnnotation", {}).get("text", "")
+
+    try:
+        from google.cloud import vision
+    except ImportError as exc:
+        raise RuntimeError(
+            "google-cloud-vision package is not installed. Install with: pip install google-cloud-vision"
+        ) from exc
+
+    client = vision.ImageAnnotatorClient()
+    image = vision.Image(content=image_bytes)
+    response = client.document_text_detection(image=image)
+    if response.error.message:
+        raise RuntimeError(f"Google Vision SDK error: {response.error.message}")
+    return response.full_text_annotation.text or ""
+
+
+def extract_htk_fields_google_vision(
+    all_pages: dict[str, list[tuple[int, Image.Image, str]]],
+    progress_cb: Callable[[str], None] | None = None,
+    api_key: str | None = None,
+) -> dict:
+    """Extract HTK fields from raw page images using Google Vision OCR text + regex extraction."""
+    def _log(message: str):
+        if progress_cb:
+            progress_cb(message)
+        else:
+            print(message)
+
+    all_page_texts: list[tuple[str, int, str]] = []
+
+    for pdf_name, pages in all_pages.items():
+        for page_num, pil_img, _ in pages:
+            _log(f"  [VISION] OCR on {Path(pdf_name).name} page {page_num}...")
+            buf = io.BytesIO()
+            pil_img.convert("RGB").save(buf, format="JPEG", quality=90)
+            img_bytes = buf.getvalue()
+            try:
+                text = _google_vision_text_from_bytes(img_bytes, api_key=api_key)
+            except Exception as exc:
+                _log(f"    [WARN] Google Vision failed on page {page_num}: {exc}")
+                text = ""
+            all_page_texts.append((pdf_name, page_num, text))
+
+    return extract_htk_fields(all_page_texts)
+
+
+def merge_htk_results(primary: dict, secondary: dict) -> dict:
+    """Prefer values from primary; fill missing fields from secondary and merge occurrences."""
+    merged = _empty_htk_results()
+    for field_name, _ in HTK_FIELDS:
+        p = primary.get(field_name, {"value": "—", "occurrences": []})
+        s = secondary.get(field_name, {"value": "—", "occurrences": []})
+
+        p_val = p.get("value", "—")
+        s_val = s.get("value", "—")
+        merged[field_name]["value"] = p_val if p_val != "—" else s_val
+
+        occ = set(tuple(x) for x in p.get("occurrences", []))
+        occ.update(tuple(x) for x in s.get("occurrences", []))
+        merged[field_name]["occurrences"] = sorted(occ, key=lambda x: (x[0], x[1]))
+    return merged
+
+
 # ---------------------------------------------------------------------------
-# DOCX helpers
+# PDF generation
 # ---------------------------------------------------------------------------
 
-def _set_cell_bg(cell, rgb: RGBColor):
-    """Set background color of a table cell."""
-    tc = cell._tc
-    tcPr = tc.get_or_add_tcPr()
-    shd = OxmlElement("w:shd")
-    color_hex = rgb if isinstance(rgb, str) else f"{rgb.red:02X}{rgb.green:02X}{rgb.blue:02X}"
-    shd.set(qn("w:val"), "clear")
-    shd.set(qn("w:color"), "auto")
-    shd.set(qn("w:fill"), color_hex)
-    tcPr.append(shd)
-
-
-def _set_cell_border(cell, border_size=4):
-    """Add thin borders to a table cell."""
-    tc = cell._tc
-    tcPr = tc.get_or_add_tcPr()
-    tcBorders = OxmlElement("w:tcBorders")
-    for side in ("top", "left", "bottom", "right"):
-        border = OxmlElement(f"w:{side}")
-        border.set(qn("w:val"), "single")
-        border.set(qn("w:sz"), str(border_size))
-        border.set(qn("w:space"), "0")
-        border.set(qn("w:color"), "AAAAAA")
-        tcBorders.append(border)
-    tcPr.append(tcBorders)
-
-
-def _para_style(para, bold=False, size=10, color=None, align=None):
-    run = para.runs[0] if para.runs else para.add_run()
-    run.bold = bold
-    run.font.size = Pt(size)
-    if color:
-        run.font.color.rgb = color
-    if align:
-        para.alignment = align
-
-
-def add_htk_summary_page(doc: Document, htk_results: dict, pdf_names: list[str]):
-    """Add the first page: HTK cross-reference summary table."""
-    heading = doc.add_heading("ΣΤΟΙΧΕΙΑ ΓΙΑ ΗΛΕΚΤΡΟΝΙΚΗ ΤΑΥΤΟΤΗΤΑ ΚΤΙΡΙΟΥ (ΗΤΚ)", level=1)
-    heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    heading.runs[0].font.color.rgb = RGBColor(0x1F, 0x49, 0x7D)
-
-    sub = doc.add_paragraph(f"Επεξεργάστηκαν {len(pdf_names)} έγγραφο/α: {', '.join(pdf_names)}")
-    sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    sub.runs[0].font.size = Pt(9)
-    sub.runs[0].font.color.rgb = RGBColor(0x60, 0x60, 0x60)
-
-    doc.add_paragraph()
-
-    # Table: Πεδίο | Καλύτερη τιμή | Βρέθηκε σε (σελίδες) | Σύνολο αναφορών
-    table = doc.add_table(rows=1, cols=4)
-    table.style = "Table Grid"
-    hdr_cells = table.rows[0].cells
-    headers = ["Πεδίο ΗΤΚ", "Καλύτερη τιμή", "Βρέθηκε σε (σελίδα/έγγραφο)", "Σύνολο αναφορών"]
-    for i, (cell, text) in enumerate(zip(hdr_cells, headers)):
-        _set_cell_bg(cell, HEADER_BG_HEX)
-        _set_cell_border(cell)
-        p = cell.paragraphs[0]
-        run = p.add_run(text)
-        run.bold = True
-        run.font.size = Pt(10)
-        run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-
-    for row_idx, (field_name, _) in enumerate(HTK_FIELDS):
+def build_pdf_output(htk_results: dict, pdf_names: list[str], all_pages: dict) -> bytes:
+    """
+    Build a PDF report from OCR results using ReportLab.
+    
+    Args:
+        htk_results: Dictionary with extracted HTK fields and their occurrences
+        pdf_names: List of processed PDF file names
+        all_pages: Dict of {pdf_name: [(page_num, pil_image, ocr_text), ...]}
+    
+    Returns:
+        PDF file content as bytes
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch, cm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image as RLImage
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from io import BytesIO
+    import tempfile
+    
+    # Create PDF in memory
+    pdf_buffer = BytesIO()
+    doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, topMargin=0.5*cm, bottomMargin=0.5*cm)
+    
+    # Build elements list
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Custom styles
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=14,
+        textColor=colors.HexColor('#1F497D'),
+        alignment=TA_CENTER,
+        spaceAfter=12
+    )
+    
+    subtitle_style = ParagraphStyle(
+        'CustomSubtitle',
+        parent=styles['Normal'],
+        fontSize=9,
+        textColor=colors.HexColor('#606060'),
+        alignment=TA_CENTER,
+        spaceAfter=12
+    )
+    
+    # Title
+    title = Paragraph("ΣΤΟΙΧΕΙΑ ΓΙΑ ΗΛΕΚΤΡΟΝΙΚΗ ΤΑΥΤΟΤΗΤΑ ΚΤΙΡΙΟΥ (ΗΤΚ)", title_style)
+    elements.append(title)
+    
+    # Subtitle with document list
+    doc_list = ", ".join([Path(p).stem for p in pdf_names])
+    subtitle = Paragraph(f"Επεξεργάστηκαν {len(pdf_names)} έγγραφο/α: {doc_list}", subtitle_style)
+    elements.append(subtitle)
+    elements.append(Spacer(1, 0.3*cm))
+    
+    # HTK Summary Table
+    table_data = [["Πεδίο ΗΤΚ", "Καλύτερη τιμή", "Βρέθηκε σε", "Σύνολο"]]
+    
+    for field_name, _ in HTK_FIELDS:
         data = htk_results.get(field_name, {"value": "—", "occurrences": []})
         occs = data["occurrences"]
-
-        # Format occurrence list
+        
         if occs:
             occ_parts = []
             for pdf_name, page_num in occs:
-                occ_parts.append(f"Σελ.{page_num} ({Path(pdf_name).stem})")
+                occ_parts.append(f"Σ.{page_num}")
             occ_str = ", ".join(occ_parts)
         else:
-            occ_str = "Δεν βρέθηκε"
+            occ_str = "—"
+        
+        table_data.append([field_name, data["value"], occ_str, str(len(occs))])
+    
+    table = Table(table_data, colWidths=[3*cm, 4*cm, 6*cm, 1.5*cm])
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1F497D')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 9),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+        ('FONTSIZE', (0, 1), (-1, -1), 8),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F0F0F0')]),
+    ]))
+    
+    elements.append(table)
+    elements.append(PageBreak())
+    
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        for pdf_name in pdf_names:
+            if pdf_name not in all_pages:
+                continue
 
-        row_cells = table.add_row().cells
-        row_data = [field_name, data["value"], occ_str, str(len(occs))]
+            pages = all_pages[pdf_name]
+            for page_num, pil_img, ocr_text in pages:
+                label_text = f"{Path(pdf_name).name} - Σελίδα {page_num}"
+                label = Paragraph(label_text, ParagraphStyle(
+                    'SectionLabel',
+                    parent=styles['Normal'],
+                    fontSize=9,
+                    textColor=colors.HexColor('#444444'),
+                    spaceAfter=6
+                ))
+                elements.append(label)
 
-        for cell, text in zip(row_cells, row_data):
-            _set_cell_border(cell)
-            if row_idx % 2 == 0:
-                _set_cell_bg(cell, ALT_ROW_BG_HEX)
-            p = cell.paragraphs[0]
-            run = p.add_run(text)
-            run.font.size = Pt(9)
+                safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", pdf_name)
+                tmp_path = os.path.join(tmp_dir, f"page_{safe_name}_{page_num}.jpg")
 
-    # Set column widths
-    widths = [Inches(1.5), Inches(2.0), Inches(3.0), Inches(0.8)]
-    for row in table.rows:
-        for cell, width in zip(row.cells, widths):
-            cell.width = width
+                if pil_img.mode == 'RGBA':
+                    rgb_img = Image.new('RGB', pil_img.size, (255, 255, 255))
+                    rgb_img.paste(pil_img, mask=pil_img.split()[3])
+                    rgb_img.save(tmp_path, 'JPEG', quality=75, optimize=True)
+                else:
+                    pil_img.convert('RGB').save(tmp_path, 'JPEG', quality=75, optimize=True)
 
-    doc.add_page_break()
+                rl_img = RLImage(tmp_path, width=3 * cm, height=3.5 * cm)
+                ocr_para = Paragraph(
+                    (ocr_text.strip() if ocr_text.strip() else "(Δεν αναγνωρίστηκε κείμενο)"),
+                    ParagraphStyle(
+                        'OCRText',
+                        parent=styles['Normal'],
+                        fontSize=7,
+                        leftIndent=0.2 * cm
+                    )
+                )
 
+                page_table = Table([[rl_img, ocr_para]], colWidths=[3.5 * cm, 11 * cm])
+                page_table.setStyle(TableStyle([
+                    ('ALIGN', (0, 0), (0, 0), 'CENTER'),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
+                ]))
+                elements.append(page_table)
+                elements.append(Spacer(1, 0.3 * cm))
 
-def add_page_spread(doc: Document, pdf_name: str, page_num: int,
-                     pil_img: Image.Image, ocr_text: str, img_dir: str):
-    """Add a two-column table row: [page image] | [OCR text]."""
-    # Section label
-    label = doc.add_paragraph()
-    label.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    run = label.add_run(f"📄 {Path(pdf_name).name}  —  Σελίδα {page_num}")
-    run.bold = True
-    run.font.size = Pt(9)
-    run.font.color.rgb = RGBColor(0x44, 0x44, 0x44)
-
-    # Save original page image for embedding
-    img_path = os.path.join(img_dir, f"page_{Path(pdf_name).stem}_{page_num}.png")
-    pil_img.save(img_path)
-
-    table = doc.add_table(rows=1, cols=2)
-    table.style = "Table Grid"
-    row = table.rows[0]
-
-    # Left cell: image
-    left_cell = row.cells[0]
-    left_cell.width = Inches(3.5)
-    _set_cell_border(left_cell)
-    lp = left_cell.paragraphs[0]
-    lp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run_img = lp.add_run()
-    run_img.add_picture(img_path, width=Inches(3.3))
-
-    # Right cell: OCR text
-    right_cell = row.cells[1]
-    right_cell.width = Inches(4.5)
-    _set_cell_border(right_cell)
-    rp = right_cell.paragraphs[0]
-    rp.clear()
-    run_txt = rp.add_run(ocr_text.strip() if ocr_text.strip() else "(Δεν αναγνωρίστηκε κείμενο)")
-    run_txt.font.size = Pt(8)
-    run_txt.font.name = "Calibri"
-
-    doc.add_paragraph()  # spacing between pages
+        doc.build(elements)
+    
+    # Return PDF bytes
+    pdf_buffer.seek(0)
+    return pdf_buffer.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -386,17 +610,186 @@ def collect_pdfs(inputs: list[str]) -> list[str]:
     return [str(p) for p in pdfs]
 
 
+def process_pdfs(
+    inputs: list[str],
+    output: str = "output/result.pdf",
+    poppler_path: str | None = None,
+    tesseract_path: str | None = None,
+    engine: str = "ocr",
+    vlm_model: str = "qwen2.5-vl:7b",
+    google_api_key: str | None = None,
+    progress_cb: Callable[[str], None] | None = None,
+) -> dict:
+    """Run the OCR pipeline and return output metadata."""
+    def _log(message: str):
+        if progress_cb:
+            progress_cb(message)
+        else:
+            print(message)
+
+    if tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
+
+    resolved_google_api_key = google_api_key or os.getenv("GOOGLE_API_KEY")
+
+    resolved_poppler_path = poppler_path or POPPLER_PATH
+
+    pdf_paths = collect_pdfs(inputs)
+    if not pdf_paths:
+        raise ValueError("No PDF files found in provided inputs.")
+
+    _log(f"[INFO] Processing {len(pdf_paths)} PDF(s):")
+    for p in pdf_paths:
+        _log(f"       {p}")
+
+    out_path = Path(output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    all_page_texts = []
+    all_pages_by_pdf = {}  # {pdf_name: [(page_num, pil_img, text), ...]}
+    converted_docs = 0
+
+    for pdf_path in pdf_paths:
+        pdf_name = Path(pdf_path).name
+        cached = load_cache(pdf_path)
+
+        _log(f"\n[INFO] Converting '{pdf_name}' to images...")
+        try:
+            pil_pages = convert_from_path(
+                pdf_path, dpi=300,
+                poppler_path=resolved_poppler_path
+            )
+            converted_docs += 1
+        except Exception as e:
+            _log(f"[ERROR] Could not convert '{pdf_name}': {e}")
+            continue
+
+        all_pages_by_pdf[pdf_name] = []
+
+        if cached and len(cached) == len(pil_pages):
+            _log(f"  [CACHE] Using cached OCR for '{pdf_name}' ({len(pil_pages)} pages)")
+            for page_num, pil_img in enumerate(pil_pages, start=1):
+                text = cached[page_num - 1][1]
+                all_page_texts.append((pdf_path, page_num, text))
+                all_pages_by_pdf[pdf_name].append((page_num, pil_img, text))
+        else:
+            page_cache = []
+            for page_num, pil_img in enumerate(pil_pages, start=1):
+                _log(f"  OCR page {page_num}/{len(pil_pages)}...")
+                try:
+                    text = run_ocr(pil_img)
+                except Exception as e:
+                    text = f"[OCR error: {e}]"
+                    _log(f"    [WARN] OCR error on page {page_num}: {e}")
+                page_cache.append((page_num, text))
+                all_page_texts.append((pdf_path, page_num, text))
+                all_pages_by_pdf[pdf_name].append((page_num, pil_img, text))
+            save_cache(pdf_path, page_cache)
+            _log(f"  [CACHE] Saved OCR cache for '{pdf_name}'")
+
+    if not all_page_texts:
+        raise RuntimeError("No pages were processed successfully.")
+
+    _log("\n[INFO] Extracting HTK fields...")
+    ocr_results = extract_htk_fields(all_page_texts)
+
+    engine_used = engine
+    if engine == "ocr":
+        htk_results = ocr_results
+    elif engine == "vlm":
+        _log(f"[INFO] Running VLM-only extraction with model '{vlm_model}'...")
+        htk_results = extract_htk_fields_vlm(all_pages_by_pdf, vlm_model, progress_cb=_log)
+        engine_used = "vlm"
+    elif engine == "vision":
+        _log("[INFO] Running Google Vision-only extraction...")
+        htk_results = extract_htk_fields_google_vision(
+            all_pages_by_pdf,
+            progress_cb=_log,
+            api_key=resolved_google_api_key,
+        )
+        engine_used = "vision"
+    elif engine == "hybrid":
+        _log(f"[INFO] Running hybrid extraction (OCR + {vlm_model})...")
+        try:
+            vlm_results = extract_htk_fields_vlm(all_pages_by_pdf, vlm_model, progress_cb=_log)
+            htk_results = merge_htk_results(ocr_results, vlm_results)
+            engine_used = "ocr+vlm"
+        except Exception as exc:
+            _log(f"[WARN] Hybrid fallback to OCR-only due to VLM error: {exc}")
+            htk_results = ocr_results
+            engine_used = "ocr"
+    elif engine == "hybrid_vision":
+        _log("[INFO] Running hybrid extraction (OCR + Google Vision)...")
+        try:
+            vision_results = extract_htk_fields_google_vision(
+                all_pages_by_pdf,
+                progress_cb=_log,
+                api_key=resolved_google_api_key,
+            )
+            htk_results = merge_htk_results(ocr_results, vision_results)
+            engine_used = "ocr+vision"
+        except Exception as exc:
+            _log(f"[WARN] Hybrid Vision fallback to OCR-only due to error: {exc}")
+            htk_results = ocr_results
+            engine_used = "ocr"
+    elif engine == "hybrid_all":
+        _log(f"[INFO] Running hybrid_all extraction (OCR + {vlm_model} + Google Vision)...")
+        combined = ocr_results
+        engines = ["ocr"]
+
+        try:
+            vlm_results = extract_htk_fields_vlm(all_pages_by_pdf, vlm_model, progress_cb=_log)
+            combined = merge_htk_results(combined, vlm_results)
+            engines.append("vlm")
+        except Exception as exc:
+            _log(f"[WARN] VLM stage skipped due to error: {exc}")
+
+        try:
+            vision_results = extract_htk_fields_google_vision(
+                all_pages_by_pdf,
+                progress_cb=_log,
+                api_key=resolved_google_api_key,
+            )
+            combined = merge_htk_results(combined, vision_results)
+            engines.append("vision")
+        except Exception as exc:
+            _log(f"[WARN] Vision stage skipped due to error: {exc}")
+
+        htk_results = combined
+        engine_used = "+".join(engines)
+    else:
+        raise ValueError("engine must be one of: ocr, vlm, vision, hybrid, hybrid_vision, hybrid_all")
+
+    pdf_names = [Path(p).name for p in pdf_paths]
+    _log("[INFO] Building PDF...")
+
+    # Build PDF and write to disk
+    pdf_bytes = build_pdf_output(htk_results, pdf_names, all_pages_by_pdf)
+    out_path.write_bytes(pdf_bytes)
+
+    _log(f"\n[DONE] Saved: {out_path.resolve()}")
+    return {
+        "output_path": str(out_path.resolve()),
+        "input_count": len(pdf_paths),
+        "converted_count": converted_docs,
+        "page_count": len(all_page_texts),
+        "engine_used": engine_used,
+        "vlm_model": vlm_model if "vlm" in engine_used else None,
+        "vision_mode": "vision" in engine_used,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="OCR Greek property PDFs → DOCX with HTK summary"
+        description="OCR Greek property PDFs -> PDF with HTK summary"
     )
     parser.add_argument(
         "inputs", nargs="+",
         help="One or more PDF file paths, or a folder containing PDFs"
     )
     parser.add_argument(
-        "--output", default="output/result.docx",
-        help="Output DOCX path (default: output/result.docx)"
+        "--output", default="output/result.pdf",
+        help="Output PDF path (default: output/result.pdf)"
     )
     parser.add_argument(
         "--poppler-path", default=None,
@@ -406,96 +799,33 @@ def main():
         "--tesseract-path", default=None,
         help="Path to tesseract.exe (Windows, if not on PATH)"
     )
+    parser.add_argument(
+        "--engine", choices=["ocr", "vlm", "vision", "hybrid", "hybrid_vision", "hybrid_all"], default="ocr",
+        help="Extraction engine mode (default: ocr)"
+    )
+    parser.add_argument(
+        "--vlm-model", default="qwen2.5-vl:7b",
+        help="Ollama VLM model tag for hybrid/vlm modes"
+    )
+    parser.add_argument(
+        "--google-api-key", default=None,
+        help="Google Vision API key (optional). Prefer env GOOGLE_API_KEY or ADC service account credentials."
+    )
     args = parser.parse_args()
 
-    if args.tesseract_path:
-        pytesseract.pytesseract.tesseract_cmd = args.tesseract_path
-
-    poppler_path = args.poppler_path or POPPLER_PATH
-
-    # Resolve PDFs
-    pdf_paths = collect_pdfs(args.inputs)
-    if not pdf_paths:
-        print("[ERROR] No PDF files found. Exiting.")
+    try:
+        process_pdfs(
+            inputs=args.inputs,
+            output=args.output,
+            poppler_path=args.poppler_path,
+            tesseract_path=args.tesseract_path,
+            engine=args.engine,
+            vlm_model=args.vlm_model,
+            google_api_key=args.google_api_key,
+        )
+    except Exception as exc:
+        print(f"[ERROR] {exc}")
         sys.exit(1)
-
-    print(f"[INFO] Processing {len(pdf_paths)} PDF(s):")
-    for p in pdf_paths:
-        print(f"       {p}")
-
-    # Ensure output directory exists
-    out_path = Path(args.output)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    doc = Document()
-
-    # Set page margins (narrow for more content space)
-    for section in doc.sections:
-        section.top_margin = Inches(0.6)
-        section.bottom_margin = Inches(0.6)
-        section.left_margin = Inches(0.7)
-        section.right_margin = Inches(0.7)
-
-    all_page_texts = []   # (pdf_path, page_num, ocr_text)
-    all_pages = []        # (pdf_path, page_num, pil_img, ocr_text)
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        # Phase 1: convert & OCR all pages (with cache)
-        for pdf_path in pdf_paths:
-            pdf_name = Path(pdf_path).name
-            cached = load_cache(pdf_path)
-
-            print(f"\n[INFO] Converting '{pdf_name}' to images...")
-            try:
-                pil_pages = convert_from_path(
-                    pdf_path, dpi=300,
-                    poppler_path=poppler_path
-                )
-            except Exception as e:
-                print(f"[ERROR] Could not convert '{pdf_name}': {e}")
-                continue
-
-            if cached and len(cached) == len(pil_pages):
-                print(f"  [CACHE] Using cached OCR for '{pdf_name}' ({len(pil_pages)} pages)")
-                for page_num, pil_img in enumerate(pil_pages, start=1):
-                    text = cached[page_num - 1][1]
-                    all_page_texts.append((pdf_path, page_num, text))
-                    all_pages.append((pdf_path, page_num, pil_img, text))
-            else:
-                page_cache = []
-                for page_num, pil_img in enumerate(pil_pages, start=1):
-                    print(f"  OCR page {page_num}/{len(pil_pages)}...", end=" ", flush=True)
-                    try:
-                        text = run_ocr(pil_img)
-                        print("OK")
-                    except Exception as e:
-                        text = f"[OCR error: {e}]"
-                        print(f"ERROR: {e}")
-                    page_cache.append((page_num, text))
-                    all_page_texts.append((pdf_path, page_num, text))
-                    all_pages.append((pdf_path, page_num, pil_img, text))
-                save_cache(pdf_path, page_cache)
-                print(f"  [CACHE] Saved OCR cache for '{pdf_name}'")
-
-        # Phase 2: extract HTK fields
-        print("\n[INFO] Extracting HTK fields...")
-        htk_results = extract_htk_fields(all_page_texts)
-
-        pdf_names = [Path(p).name for p in pdf_paths]
-
-        # Phase 3: build DOCX
-        print("[INFO] Building DOCX...")
-
-        # Page 1: HTK summary
-        add_htk_summary_page(doc, htk_results, pdf_names)
-
-        # Remaining pages: image + OCR text
-        for pdf_path, page_num, pil_img, ocr_text in all_pages:
-            add_page_spread(doc, pdf_path, page_num, pil_img, ocr_text, tmp_dir)
-
-        # Save
-        doc.save(str(out_path))
-        print(f"\n[DONE] Saved: {out_path.resolve()}")
 
 
 if __name__ == "__main__":

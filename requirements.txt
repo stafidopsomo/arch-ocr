@@ -5,3 +5,10 @@ pytesseract
 python-docx
 numpy
 easyocr
+reportlab
+fastapi
+uvicorn
+python-multipart
+jinja2
+ollama
+google-cloud-vision

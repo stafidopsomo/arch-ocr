@@ -1,114 +1,130 @@
-# Setup Guide — OCR HTK Tool (Windows)
+# Setup Guide - OCR HTK Tool (Windows)
+
+This guide installs and verifies the local OCR pipeline on Windows.
 
 ## Requirements
 
-You need three things installed before running the script:
-1. **Python 3.10+**
-2. **Tesseract OCR** (with Greek language data)
-3. **Poppler for Windows** (used by pdf2image)
+Install these before running:
+1. Python 3.10+
+2. Tesseract OCR with Greek language data
+3. Poppler for Windows (required by pdf2image)
 
----
+## Step 1 - Install Tesseract OCR
 
-## Step 1 — Install Tesseract OCR
+1. Download installer:
+   https://github.com/UB-Mannheim/tesseract/wiki
 
-1. Download the installer from:
-   **https://github.com/UB-Mannheim/tesseract/wiki**
-   (Choose the latest 64-bit `.exe`)
+2. During install:
+   - Include Greek language data (look for ell and grc)
+   - Default path is usually C:\Program Files\Tesseract-OCR\
 
-2. During installation:
-   - On the "Additional language data" screen, **check "Greek"** (or search for `ell` / `grc`)
-   - Note the install path (default: `C:\Program Files\Tesseract-OCR\`)
+3. Add to PATH:
+   - Open Environment Variables
+   - Edit system Path
+   - Add C:\Program Files\Tesseract-OCR
 
-3. Add Tesseract to PATH:
-   - Open **System Properties → Environment Variables**
-   - Under **System variables**, find `Path` → Edit → New
-   - Add: `C:\Program Files\Tesseract-OCR`
+4. Verify in a new terminal:
 
-4. Verify: open a new terminal and run:
-   ```
-   tesseract --version
-   tesseract --list-langs
-   ```
-   You should see `ell` and `grc` in the language list.
+```powershell
+tesseract --version
+tesseract --list-langs
+```
 
----
+Expected language list includes:
+- ell
+- grc
 
-## Step 2 — Install Poppler for Windows
+## Step 2 - Install Poppler
 
-1. Download the latest Windows build from:
-   **https://github.com/oschwartz10612/poppler-windows/releases**
-   (Download the `.zip`, e.g. `Release-xx.xx.x-0.zip`)
+1. Download Windows build:
+   https://github.com/oschwartz10612/poppler-windows/releases
 
-2. Extract to a folder, e.g. `C:\poppler\`
+2. Extract (example):
+   C:\poppler\
 
-3. Add the `bin` folder to PATH:
-   - Add: `C:\poppler\Library\bin`
-   (the exact path depends on the release — it's the folder containing `pdftoppm.exe`)
+3. Add Poppler bin to PATH (example):
+   C:\poppler\Library\bin
 
 4. Verify:
-   ```
-   pdftoppm -v
-   ```
 
----
+```powershell
+pdftoppm -v
+```
 
-## Step 3 — Install Python dependencies
+## Step 3 - Create Virtual Environment And Install Dependencies
 
-Open a terminal in the `ocr_htk` folder and run:
+From repository root:
 
-```bash
+```powershell
+py -m venv .venv
+.\.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
----
+## Input/Output Folders
 
-## Usage
+Recommended local workflow:
+- Put test PDFs in test_inputs\
+- Generated reports go to output\
+- OCR cache is stored in ocr_cache\
 
-### Single PDF
-```bash
-python ocr_script.py "C:\Users\Stelios\Downloads\CamScanner 30-3-26 11.36.pdf"
+## CLI Usage
+
+Single PDF:
+
+```powershell
+.\.venv\Scripts\python ocr_script.py test_inputs\example.pdf
 ```
 
-### Multiple PDFs (same client / property)
-```bash
-python ocr_script.py doc1.pdf doc2.pdf doc3.pdf
+Custom output path:
+
+```powershell
+.\.venv\Scripts\python ocr_script.py test_inputs\example.pdf --output output\result.pdf
 ```
 
-### All PDFs in a folder
-```bash
-python ocr_script.py "C:\Users\Stelios\Downloads\client_folder"
+Process all PDFs in folder:
+
+```powershell
+.\.venv\Scripts\python ocr_script.py test_inputs\
 ```
 
-### Custom output path
-```bash
-python ocr_script.py doc1.pdf doc2.pdf --output "C:\Users\Stelios\Desktop\client_result.docx"
+If executables are not on PATH:
+
+```powershell
+.\.venv\Scripts\python ocr_script.py test_inputs\example.pdf --tesseract-path "C:\Program Files\Tesseract-OCR\tesseract.exe" --poppler-path "C:\poppler\Library\bin"
 ```
 
-### If Tesseract or Poppler are NOT on PATH
-```bash
-python ocr_script.py doc1.pdf \
-  --tesseract-path "C:\Program Files\Tesseract-OCR\tesseract.exe" \
-  --poppler-path "C:\poppler\Library\bin"
-```
+## Output Format
 
----
-
-## Output
-
-The script produces a single `.docx` file:
+The script now produces one PDF report:
 
 | Page | Content |
 |------|---------|
-| 1 | HTK summary table — all key fields found, which pages/documents they appear in, and total occurrences |
-| 2+ | Per-page two-column table: original page image (left) + OCR text (right) |
+| 1 | HTK summary table with extracted values and page references |
+| 2+ | Per-page two-column layout: page image (left) and OCR text (right) |
 
----
+## Local Web App (Optional)
+
+Start:
+
+```powershell
+.\.venv\Scripts\python -m uvicorn webapp:app --reload
+```
+
+Open:
+- http://127.0.0.1:8000
 
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
-| `TesseractNotFoundError` | Add Tesseract to PATH or use `--tesseract-path` |
-| `PDFInfoNotInstalledError` | Add Poppler `bin` to PATH or use `--poppler-path` |
-| Greek text is garbled | Make sure `ell` and `grc` lang packs are installed in Tesseract |
-| Low OCR quality on old docs | The script auto-preprocesses images; very degraded pages may still be hard to read |
+| Tesseract not found | Add Tesseract folder to PATH or use --tesseract-path |
+| Poppler/pdfinfo not found | Add Poppler bin to PATH or use --poppler-path |
+| No PDFs found | Check input path and file extension |
+| OCR quality low on archival pages | Expected on handwriting/stamps; keep manual review in flow |
+| Greek text in output appears degraded | Current known limitation in PDF rendering path; see README known limitations |
+
+## Quality Expectation
+
+This tool is currently optimized for local testing and assisted extraction, not zero-touch legal automation.
+Human review is still required for low-confidence fields.

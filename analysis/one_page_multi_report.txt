@@ -1,0 +1,34 @@
+=== tesseract_raw_ell_grc_psm6 ===
+- ΠΑΥΛΟΣ ΣΤΑΘΑΤΟΣ: contains=False, token_coverage=0.00
+- ΑΡΤΕΜΗΣΙΟΥΣ ΔΡΑΓΑΤΣΑΝΙΟΥ: contains=False, token_coverage=0.00
+- Γ ΦΟΛΙΔΗΣ: contains=False, token_coverage=0.50
+- ΒΙΟΤΕΧΝΙΑ: contains=False, token_coverage=0.00
+- ΦΟΡΤΙΩΝ ΜΕ ΟΔΗΓΟΥ: contains=False, token_coverage=1.00
+- ΑΠΛΟΣ: contains=True, token_coverage=1.00
+
+=== tesseract_preprocessed_ell_grc_psm6 ===
+- ΠΑΥΛΟΣ ΣΤΑΘΑΤΟΣ: contains=False, token_coverage=0.00
+- ΑΡΤΕΜΗΣΙΟΥΣ ΔΡΑΓΑΤΣΑΝΙΟΥ: contains=False, token_coverage=0.00
+- Γ ΦΟΛΙΔΗΣ: contains=False, token_coverage=0.50
+- ΒΙΟΤΕΧΝΙΑ: contains=False, token_coverage=0.00
+- ΦΟΡΤΙΩΝ ΜΕ ΟΔΗΓΟΥ: contains=False, token_coverage=0.67
+- ΑΠΛΟΣ: contains=True, token_coverage=1.00
+
+=== easyocr_en ===
+- ΠΑΥΛΟΣ ΣΤΑΘΑΤΟΣ: contains=False, token_coverage=0.00
+- ΑΡΤΕΜΗΣΙΟΥΣ ΔΡΑΓΑΤΣΑΝΙΟΥ: contains=False, token_coverage=0.00
+- Γ ΦΟΛΙΔΗΣ: contains=False, token_coverage=0.00
+- ΒΙΟΤΕΧΝΙΑ: contains=False, token_coverage=0.00
+- ΦΟΡΤΙΩΝ ΜΕ ΟΔΗΓΟΥ: contains=False, token_coverage=0.00
+- ΑΠΛΟΣ: contains=False, token_coverage=0.00
+
+=== paddleocr ===
+[ERROR] missing runtime/backend: No module named 'paddle'
+
+=== doctr_default ===
+- ΠΑΥΛΟΣ ΣΤΑΘΑΤΟΣ: contains=False, token_coverage=0.00
+- ΑΡΤΕΜΗΣΙΟΥΣ ΔΡΑΓΑΤΣΑΝΙΟΥ: contains=False, token_coverage=0.00
+- Γ ΦΟΛΙΔΗΣ: contains=False, token_coverage=0.00
+- ΒΙΟΤΕΧΝΙΑ: contains=False, token_coverage=0.00
+- ΦΟΡΤΙΩΝ ΜΕ ΟΔΗΓΟΥ: contains=False, token_coverage=0.00
+- ΑΠΛΟΣ: contains=False, token_coverage=0.00
