@@ -36,11 +36,11 @@
     p { margin: 4px 0; color: var(--muted); }
     form {
       display: grid;
-      grid-template-columns: 1fr 1fr auto;
+      grid-template-columns: 1fr 1fr 1fr auto;
       gap: 10px;
       align-items: end;
     }
-    input, button {
+    input, select, button {
       width: 100%;
       border-radius: 10px;
       border: 1px solid var(--line);
@@ -96,6 +96,18 @@
           <input type="text" name="client_name" placeholder="tester" value="tester" />
         </div>
         <div>
+          <label>Engine</label>
+          <select name="engine">
+            {% for option in engine_choices %}
+            <option value="{{ option }}" {% if option == default_engine %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label>VLM model (for vlm/hybrid modes)</label>
+          <input type="text" name="vlm_model" value="{{ default_vlm_model }}" placeholder="glm-ocr" />
+        </div>
+        <div>
           <label>PDF files</label>
           <input type="file" name="files" accept=".pdf" multiple required />
         </div>
@@ -113,6 +125,7 @@
             <th>ID</th>
             <th>Status</th>
             <th>Client</th>
+            <th>Engine</th>
             <th>Files</th>
             <th>Metrics</th>
             <th>Result</th>
@@ -124,6 +137,12 @@
             <td>{{ job.id }}</td>
             <td><span class="badge {{ job.status }}">{{ job.status }}</span></td>
             <td>{{ job.client_name }}</td>
+            <td>
+              <div class="small">{{ job.engine }}</div>
+              {% if job.vlm_model %}
+              <div class="small">{{ job.vlm_model }}</div>
+              {% endif %}
+            </td>
             <td>
               {% for f in job.files %}
               <div class="small">{{ f }}</div>

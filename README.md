@@ -1,43 +1,50 @@
 # arch-ocr
 
-Local OCR pipeline for Greek property documents (HTK - Ηλεκτρονική Ταυτότητα Κτιρίου).
+Local OCR pipeline for Greek property documents (Ηλεκτρονική Ταυτότητα Κτιρίου).
 
-The current implementation processes one or more scanned PDFs and generates one combined PDF report:
-- Page 1: HTK summary table (best extracted values + page references)
-- Following pages: side-by-side layout with scanned image and OCR text
+The pipeline processes one or more scanned PDFs and generates one combined PDF report.
+
+- Page 1 contains an HTK summary table (best extracted values and page references).
+- Remaining pages contain side-by-side page image and extracted text.
 
 ## Current Status
 
-- Pipeline runs locally end to end on macOS.
-- Multi-engine architecture implemented supporting: `ocr`, `vlm` (local Ollama), `vision` (Google Cloud), and `hybrid` cascades.
-- Web UI is available for local testing (FastAPI).
-- Output format changed from DOCX to PDF to reduce storage size.
+- End-to-end pipeline runs locally on macOS.
+- Multi-engine extraction is implemented: ocr, vlm, vision, hybrid, hybrid_vision, hybrid_all.
+- VLM and Vision only modes now skip Tesseract OCR pre-processing.
+- Vision-only mode now fails fast on API errors instead of silently continuing with empty text.
+- Web UI supports per-job engine and VLM model selection.
+- Output format is PDF.
 
-### Hardware Constraints & Local VLM
-- Running 7B+ Vision models (e.g., `qwen2.5-vl:7b`) on a 16GB Mac can cause Out Of Memory (OOM) crashes because full-resolution PDF page inference requires massive RAM (~9GB context mapping alone).
-- **Recommendation:** Downscale input images before sending to VLM, or use smaller models (e.g., `qwen3.5:0.8b` or `glm-ocr`) to fit inside available memory limits.
+### Hardware Constraints For Local VLM
+
+- Running larger vision models on 16GB systems can trigger out-of-memory failures on full-resolution pages.
+- Use single-page tests, downscale input pages, or smaller models such as glm-ocr and qwen3.5:0.8b.
 
 Important quality note:
-- Greek glyph rendering in the generated PDF text layer currently requires font adjustments.
+
+- Greek glyph rendering in the generated PDF text layer still needs font-path improvement.
 
 ## Scope
 
 In scope:
+
 - Local OCR of scanned Greek property PDFs
-- HTK field extraction for key identity/property fields
-- Local web upload workflow for one tester
-- Deterministic, inspectable output artifact (PDF)
+- HTK field extraction for key identity and property fields
+- Local web upload workflow for a single tester
+- Deterministic PDF output artifact for review
 
 Out of scope (for now):
+
 - Production authentication and multi-tenant security
 - Cloud hosting and autoscaling
 - Guaranteed handwritten-text accuracy without review
 - Zero-touch legal-grade automation
 
-## What It Extracts
+## Extracted Fields
 
 | Field | Greek |
-|-------|-------|
+| ----- | ----- |
 | First name | Όνομα |
 | Last name | Επώνυμο |
 | Father's name | Πατρώνυμο |
@@ -52,34 +59,34 @@ Out of scope (for now):
 | Phone | Τηλέφωνο |
 | Tax number | ΑΦΜ |
 
-## Technical Architecture
+## Architecture
 
-Core pipeline (ocr_script.py):
-1. Resolve input files/folders to PDF list
-2. Convert each page to image (pdf2image + poppler)
-3. Preprocess page image (grayscale, upscale, CLAHE, denoise, deskew, threshold)
-4. OCR with Tesseract (lang: ell+grc)
-5. Cache OCR text per source PDF hash (ocr_cache/)
-6. Extract HTK fields with regex rules
-7. Build combined PDF report (ReportLab)
+Core pipeline in ocr_script.py:
 
-Local web app (webapp.py):
-- FastAPI app with upload form and local job queue
-- JSON job store in jobs/
-- Uploaded files in uploads/
-- Output reports in output/
-- Download endpoint serves generated PDF
+1. Resolve file and folder inputs into PDF files.
+2. Convert PDF pages to images.
+3. For OCR-enabled modes: preprocess images and run Tesseract.
+4. Run engine-specific extraction path (regex, local VLM, cloud Vision, or hybrid).
+5. Build combined PDF report with summary table and page evidence.
+
+Local web app in webapp.py:
+
+- FastAPI app with upload form and local background thread processing
+- JSON job store in jobs
+- Upload staging in uploads
+- Output reports in output
+- Download endpoint for generated PDF artifacts
 
 ## Project Layout
 
-- ocr_script.py: CLI OCR pipeline and report builder
-- webapp.py: local web app + background job execution
+- ocr_script.py: CLI pipeline and PDF report generation
+- webapp.py: local web app and job execution
 - templates/index.html: local web UI
-- test_inputs/: place input PDFs for testing
-- output/: generated reports
-- uploads/: web-upload staging
-- jobs/: job metadata and logs
-- ocr_cache/: cached OCR text by file hash
+- test_inputs: sample input PDFs
+- output: generated reports
+- uploads: web-upload staging
+- jobs: job metadata and logs
+- ocr_cache: OCR cache by file hash
 
 ## Setup
 
@@ -103,7 +110,7 @@ pip install -r requirements.txt
 
 ### Windows
 
-See SETUP.md for full Windows setup and PATH configuration.
+See SETUP.md for Windows setup and PATH configuration.
 
 ## CLI Usage
 
@@ -116,115 +123,94 @@ Single PDF:
 Custom output path:
 
 ```bash
-./.venv/bin/python ocr_script.py test_inputs/example.pdf --output /tmp/test.pdf
+./.venv/bin/python ocr_script.py test_inputs/example.pdf --output output/result.pdf
 ```
 
-All PDFs in a folder:
+All PDFs in folder:
 
 ```bash
 ./.venv/bin/python ocr_script.py test_inputs/
 ```
 
-Clear OCR cache and re-run:
+Clear OCR cache and rerun:
 
 ```bash
 rm -rf ocr_cache/*
 ./.venv/bin/python ocr_script.py test_inputs/example.pdf
 ```
 
-Check output size:
+Prepare a single-page input for fast model checks:
 
 ```bash
-ls -lh output/*.pdf
+python -c "from pypdf import PdfReader, PdfWriter; r=PdfReader('test_inputs/example.pdf'); w=PdfWriter(); w.add_page(r.pages[0]); f=open('test_inputs/example_page1.pdf','wb'); w.write(f); f.close()"
 ```
 
-Engine modes:
+Engine mode examples:
 
 ```bash
-# Ensure Ollama is running and pull a vision model first
 ollama pull glm-ocr
-# or: ollama pull qwen3.5:0.8b (if 7B models OOM on your hardware)
 
-# Optional: export Google Vision key (or use service-account ADC instead)
-export GOOGLE_API_KEY="YOUR_NEW_GOOGLE_VISION_KEY"
-
-# Extract just a single page for faster benchmarking without OOMing
-python -c "from pypdf import PdfReader, PdfWriter; r=PdfReader('test_inputs/example.pdf'); w=PdfWriter(); w.add_page(r.pages[0]); f=open('test_inputs/example_page1.pdf','wb'); w.write(f); f.close()"
-
-# OCR only (default)
+# OCR only
 ./.venv/bin/python ocr_script.py test_inputs/example.pdf --engine ocr
 
-# Hybrid (OCR + local Ollama VLM fallback)
-./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --engine hybrid --vlm-model glm-ocr
-
-# VLM only (requires Ollama model available locally)
+# VLM only
 ./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --engine vlm --vlm-model glm-ocr
 
-# Google Vision only
-./.venv/bin/python ocr_script.py test_inputs/example.pdf --engine vision
+# Vision only (fails fast on API configuration errors)
+./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --engine vision
 
-# OCR + Google Vision fallback
-./.venv/bin/python ocr_script.py test_inputs/example.pdf --engine hybrid_vision
+# OCR + VLM fallback
+./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --engine hybrid --vlm-model glm-ocr
 
-# OCR + local VLM + Google Vision (max comparison mode)
+# OCR + Vision fallback
+./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --engine hybrid_vision
+
+# OCR + VLM + Vision
 ./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --engine hybrid_all --vlm-model glm-ocr
 ```
 
-## Local Web App Usage
+## Local Web App
 
 Run locally:
 
 ```bash
-export ARCH_OCR_ENGINE=hybrid_all
-export ARCH_OCR_VLM_MODEL=glm-ocr
-export GOOGLE_API_KEY="YOUR_NEW_GOOGLE_VISION_KEY"  # optional if using vision modes
+export ARCH_OCR_ENGINE=ocr
+export ARCH_OCR_VLM_MODEL=qwen2.5vl:7b
+export GOOGLE_API_KEY="YOUR_NEW_GOOGLE_VISION_KEY"
 ./.venv/bin/python -m uvicorn webapp:app --reload
 ```
 
-Open:
-- http://127.0.0.1:8000
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000).
 
-Current usability:
-- Good for one local tester
-- Shows job status, basic metrics, and download link
-- No production-grade auth yet
+Current web app behavior:
 
-## OCR Policy And Decision Gate
+- Engine and VLM model can be selected per job in the form.
+- Status and metrics are visible in the jobs table.
+- Download link is available when processing completes.
 
-Default policy:
-- Primary engine: Tesseract (ell+grc), fully local and free
-- Optional benchmark engines: EasyOCR or paid APIs
-- Human review required for low-confidence handwritten fields
+## Google Vision Notes
 
-Decision gate before moving to LLM/API:
-1. Prepare benchmark set (clean, noisy, handwritten, stamped pages)
-2. Measure per-field accuracy on required HTK outputs
-3. If critical fields remain below target after OCR tuning, add LLM post-extraction
+For optional cloud setup details, see GOOGLE_VISION_SETUP.md.
 
-## Optional Google Vision API Path
+Known blocker:
 
-For optional cloud benchmarking/fallback setup, see GOOGLE_VISION_SETUP.md.
-Use it as a controlled fallback only, not as mandatory default.
-
-Current known blocker on some projects:
-- HTTP 403 PERMISSION_DENIED with reason API_KEY_SERVICE_BLOCKED means Vision calls are blocked for that project/key.
-- Fix is in Google Cloud project settings (billing/API restrictions/key restrictions), not in this repository code.
+- HTTP 403 with reason API_KEY_SERVICE_BLOCKED indicates a Google Cloud project or key configuration issue.
+- This is not a repository code bug.
 
 Security note:
+
 - Never commit API keys.
-- If a key was pasted in chat or terminal history, rotate/revoke it immediately and create a new key.
+- If a key is exposed in logs or chat history, rotate it immediately.
 
 ## Known Limitations
 
-- Handwritten and stamp-overlapped regions are often low quality.
-- Current regex extraction can miss values in noisy OCR output.
-- Greek text rendering in generated PDF requires improvement (font/encoding path).
-- The sample report quality is not yet acceptable as final product output.
+- Handwritten and stamp-overlapped regions remain difficult.
+- Regex extraction can miss fields in noisy OCR outputs.
+- Greek text rendering in PDF text blocks still needs improvement.
 
 ## Next Recommended Work
 
-1. Fix Greek font embedding in ReportLab output.
-2. Add OCR text normalization before regex extraction.
-3. Add extraction confidence and review flags per field.
-4. Re-benchmark on expanded test set.
-5. If needed, test local Ollama vision models as optional second-stage extractor.
+1. Embed a Greek-capable font in ReportLab output.
+2. Add extraction confidence and manual-review flags.
+3. Add an optional page-range CLI flag for faster benchmarking.
+4. Add automated tests for each engine mode and fallback behavior.

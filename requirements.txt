@@ -2,10 +2,10 @@ pdf2image
 Pillow
 opencv-python
 pytesseract
-python-docx
 numpy
 easyocr
 reportlab
+pypdf
 fastapi
 uvicorn
 python-multipart

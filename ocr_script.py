@@ -247,6 +247,47 @@ def extract_htk_fields_vlm(
         else:
             print(message)
 
+    requested_model = model
+    resolved_model = model
+    try:
+        listed = ollama.list()
+        available_models = set()
+        if isinstance(listed, dict):
+            models = listed.get("models", [])
+            for item in models:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("model") or item.get("name")
+                if isinstance(name, str) and name.strip():
+                    available_models.add(name.strip())
+
+        if available_models and requested_model not in available_models:
+            aliases = []
+            if "-vl" in requested_model:
+                aliases.append(requested_model.replace("-vl", "vl"))
+            if "vl" in requested_model and "-vl" not in requested_model:
+                aliases.append(requested_model.replace("vl", "-vl", 1))
+
+            for alias in aliases:
+                if alias in available_models:
+                    resolved_model = alias
+                    _log(
+                        f"  [WARN] Requested model '{requested_model}' not found. "
+                        f"Using available model '{resolved_model}'."
+                    )
+                    break
+
+            if resolved_model == requested_model:
+                preview = ", ".join(sorted(available_models)[:8])
+                raise RuntimeError(
+                    f"Ollama model '{requested_model}' not found. "
+                    f"Available models: {preview}"
+                )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        _log(f"  [WARN] Could not validate Ollama model list: {exc}")
+
     schema = {
         "type": "object",
         "properties": {k: {"type": ["string", "null"]} for k in KEY_FIELD_MAP.keys()},
@@ -271,10 +312,10 @@ def extract_htk_fields_vlm(
                 rgb_img = pil_img.convert("RGB")
                 rgb_img.save(img_path, "JPEG", quality=90)
 
-                _log(f"  [VLM] {model} on {Path(pdf_name).name} page {page_num}...")
+                _log(f"  [VLM] {resolved_model} on {Path(pdf_name).name} page {page_num}...")
                 try:
                     response = ollama.chat(
-                        model=model,
+                        model=resolved_model,
                         messages=[
                             {
                                 "role": "user",
@@ -367,6 +408,7 @@ def extract_htk_fields_google_vision(
     all_pages: dict[str, list[tuple[int, Image.Image, str]]],
     progress_cb: Callable[[str], None] | None = None,
     api_key: str | None = None,
+    strict: bool = False,
 ) -> dict:
     """Extract HTK fields from raw page images using Google Vision OCR text + regex extraction."""
     def _log(message: str):
@@ -386,6 +428,10 @@ def extract_htk_fields_google_vision(
             try:
                 text = _google_vision_text_from_bytes(img_bytes, api_key=api_key)
             except Exception as exc:
+                if strict:
+                    raise RuntimeError(
+                        f"Google Vision failed on {Path(pdf_name).name} page {page_num}: {exc}"
+                    ) from exc
                 _log(f"    [WARN] Google Vision failed on page {page_num}: {exc}")
                 text = ""
             all_page_texts.append((pdf_name, page_num, text))
@@ -616,7 +662,7 @@ def process_pdfs(
     poppler_path: str | None = None,
     tesseract_path: str | None = None,
     engine: str = "ocr",
-    vlm_model: str = "qwen2.5-vl:7b",
+    vlm_model: str = "qwen2.5vl:7b",
     google_api_key: str | None = None,
     progress_cb: Callable[[str], None] | None = None,
 ) -> dict:
@@ -648,6 +694,8 @@ def process_pdfs(
     all_page_texts = []
     all_pages_by_pdf = {}  # {pdf_name: [(page_num, pil_img, text), ...]}
     converted_docs = 0
+    processed_pages = 0
+    needs_ocr = engine in {"ocr", "hybrid", "hybrid_vision", "hybrid_all"}
 
     for pdf_path in pdf_paths:
         pdf_name = Path(pdf_path).name
@@ -660,38 +708,48 @@ def process_pdfs(
                 poppler_path=resolved_poppler_path
             )
             converted_docs += 1
+            processed_pages += len(pil_pages)
         except Exception as e:
             _log(f"[ERROR] Could not convert '{pdf_name}': {e}")
             continue
 
         all_pages_by_pdf[pdf_name] = []
 
-        if cached and len(cached) == len(pil_pages):
-            _log(f"  [CACHE] Using cached OCR for '{pdf_name}' ({len(pil_pages)} pages)")
-            for page_num, pil_img in enumerate(pil_pages, start=1):
-                text = cached[page_num - 1][1]
-                all_page_texts.append((pdf_path, page_num, text))
-                all_pages_by_pdf[pdf_name].append((page_num, pil_img, text))
+        if needs_ocr:
+            if cached and len(cached) == len(pil_pages):
+                _log(f"  [CACHE] Using cached OCR for '{pdf_name}' ({len(pil_pages)} pages)")
+                for page_num, pil_img in enumerate(pil_pages, start=1):
+                    text = cached[page_num - 1][1]
+                    all_page_texts.append((pdf_path, page_num, text))
+                    all_pages_by_pdf[pdf_name].append((page_num, pil_img, text))
+            else:
+                page_cache = []
+                for page_num, pil_img in enumerate(pil_pages, start=1):
+                    _log(f"  OCR page {page_num}/{len(pil_pages)}...")
+                    try:
+                        text = run_ocr(pil_img)
+                    except Exception as e:
+                        text = f"[OCR error: {e}]"
+                        _log(f"    [WARN] OCR error on page {page_num}: {e}")
+                    page_cache.append((page_num, text))
+                    all_page_texts.append((pdf_path, page_num, text))
+                    all_pages_by_pdf[pdf_name].append((page_num, pil_img, text))
+                save_cache(pdf_path, page_cache)
+                _log(f"  [CACHE] Saved OCR cache for '{pdf_name}'")
         else:
-            page_cache = []
+            _log(f"  [INFO] Skipping Tesseract OCR in '{engine}' mode")
             for page_num, pil_img in enumerate(pil_pages, start=1):
-                _log(f"  OCR page {page_num}/{len(pil_pages)}...")
-                try:
-                    text = run_ocr(pil_img)
-                except Exception as e:
-                    text = f"[OCR error: {e}]"
-                    _log(f"    [WARN] OCR error on page {page_num}: {e}")
-                page_cache.append((page_num, text))
-                all_page_texts.append((pdf_path, page_num, text))
-                all_pages_by_pdf[pdf_name].append((page_num, pil_img, text))
-            save_cache(pdf_path, page_cache)
-            _log(f"  [CACHE] Saved OCR cache for '{pdf_name}'")
+                all_pages_by_pdf[pdf_name].append((page_num, pil_img, ""))
 
-    if not all_page_texts:
+    if processed_pages == 0:
         raise RuntimeError("No pages were processed successfully.")
 
-    _log("\n[INFO] Extracting HTK fields...")
-    ocr_results = extract_htk_fields(all_page_texts)
+    if needs_ocr:
+        _log("\n[INFO] Extracting HTK fields from OCR text...")
+        ocr_results = extract_htk_fields(all_page_texts)
+    else:
+        _log("\n[INFO] Skipping OCR-regex extraction in this mode...")
+        ocr_results = _empty_htk_results()
 
     engine_used = engine
     if engine == "ocr":
@@ -706,6 +764,7 @@ def process_pdfs(
             all_pages_by_pdf,
             progress_cb=_log,
             api_key=resolved_google_api_key,
+            strict=True,
         )
         engine_used = "vision"
     elif engine == "hybrid":
@@ -772,7 +831,7 @@ def process_pdfs(
         "output_path": str(out_path.resolve()),
         "input_count": len(pdf_paths),
         "converted_count": converted_docs,
-        "page_count": len(all_page_texts),
+        "page_count": processed_pages,
         "engine_used": engine_used,
         "vlm_model": vlm_model if "vlm" in engine_used else None,
         "vision_mode": "vision" in engine_used,
@@ -804,7 +863,7 @@ def main():
         help="Extraction engine mode (default: ocr)"
     )
     parser.add_argument(
-        "--vlm-model", default="qwen2.5-vl:7b",
+        "--vlm-model", default="qwen2.5vl:7b",
         help="Ollama VLM model tag for hybrid/vlm modes"
     )
     parser.add_argument(

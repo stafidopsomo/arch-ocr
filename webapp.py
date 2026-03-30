@@ -26,8 +26,10 @@ app = FastAPI(title="arch-ocr local webapp")
 templates = Jinja2Templates(directory=str(TEMPLATES_ROOT))
 
 DEFAULT_ENGINE = os.getenv("ARCH_OCR_ENGINE", "ocr")
-DEFAULT_VLM_MODEL = os.getenv("ARCH_OCR_VLM_MODEL", "qwen2.5-vl:7b")
+DEFAULT_VLM_MODEL = os.getenv("ARCH_OCR_VLM_MODEL", "qwen2.5vl:7b")
 DEFAULT_GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+ENGINE_ORDER = ["ocr", "vlm", "vision", "hybrid", "hybrid_vision", "hybrid_all"]
+ENGINE_CHOICES = set(ENGINE_ORDER)
 
 
 class JobStore:
@@ -81,6 +83,8 @@ def run_job(job_id: str, job_input_dir: Path, output_path: Path):
 
     try:
         current = store.read(job_id) or job
+        selected_engine = current.get("engine", DEFAULT_ENGINE)
+        selected_vlm_model = current.get("vlm_model", DEFAULT_VLM_MODEL)
         current["status"] = "running"
         current["updated_at"] = now_iso()
         store.write(current)
@@ -88,8 +92,8 @@ def run_job(job_id: str, job_input_dir: Path, output_path: Path):
         result = process_pdfs(
             inputs=[str(job_input_dir)],
             output=str(output_path),
-            engine=DEFAULT_ENGINE,
-            vlm_model=DEFAULT_VLM_MODEL,
+            engine=selected_engine,
+            vlm_model=selected_vlm_model,
             google_api_key=DEFAULT_GOOGLE_API_KEY,
             progress_cb=log,
         )
@@ -122,6 +126,9 @@ def index(request: Request):
         "index.html",
         {
             "jobs": store.list(),
+            "engine_choices": ENGINE_ORDER,
+            "default_engine": DEFAULT_ENGINE,
+            "default_vlm_model": DEFAULT_VLM_MODEL,
         },
     )
 
@@ -131,7 +138,15 @@ async def create_job(
     request: Request,
     files: list[UploadFile] = File(...),
     client_name: str = Form(default="tester"),
+    engine: str = Form(default=DEFAULT_ENGINE),
+    vlm_model: str = Form(default=DEFAULT_VLM_MODEL),
 ):
+    engine = (engine or DEFAULT_ENGINE).strip()
+    vlm_model = (vlm_model or DEFAULT_VLM_MODEL).strip()
+
+    if engine not in ENGINE_CHOICES:
+        raise HTTPException(status_code=400, detail=f"Invalid engine '{engine}'.")
+
     pdf_files = [f for f in files if f.filename and f.filename.lower().endswith(".pdf")]
     if not pdf_files:
         raise HTTPException(status_code=400, detail="Upload at least one PDF file.")
@@ -156,9 +171,9 @@ async def create_job(
         "updated_at": now_iso(),
         "output_path": None,
         "metrics": {},
-        "engine": DEFAULT_ENGINE,
-        "vlm_model": DEFAULT_VLM_MODEL,
-        "vision_mode": DEFAULT_ENGINE in {"vision", "hybrid_vision", "hybrid_all"},
+        "engine": engine,
+        "vlm_model": vlm_model,
+        "vision_mode": engine in {"vision", "hybrid_vision", "hybrid_all"},
         "logs": [],
         "error": None,
     }
