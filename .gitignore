@@ -1,0 +1,20 @@
+# OCR cache (auto-generated, do not commit)
+ocr_cache/
+
+# Output docs
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+
+# Temp files
+*.tmp
+~$*
