@@ -1,22 +1,19 @@
 # arch-ocr
 
-This repository is now a focused CLI workflow:
+This repository is now a focused CLI workflow for document understanding with vision LLMs.
 
-- Send a PDF page (for example `test_inputs/example_page1.pdf`) to a vision LLM.
-- Receive model feedback or structured extraction output.
+- Input: PDF page(s) or image file(s)
+- Processing: render PDF pages to images
+- Output: model feedback in markdown + optional raw API JSON
 
-Legacy OCR and web app paths are no longer the active workflow.
+Supported providers:
 
-## Current Flow
-
-- Script: `ocr_script.py`
-- Pipeline: PDF -> rendered page image(s) -> OpenRouter vision model -> markdown + optional raw JSON
-- Default output path: `output/<pdf_stem>_feedback.md`
+- OpenRouter
+- Ollama (local daemon, remote daemon, or ollama.com cloud API)
 
 ## Requirements
 
 - Python 3.10+
-- OpenRouter API key
 
 Dependencies in `requirements.txt`:
 
@@ -34,36 +31,95 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-```
-
-Create your env file:
-
-```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+## Provider Modes
+
+### 1) OpenRouter (default)
+
+Set in `.env`:
 
 ```env
+LLM_PROVIDER=openrouter
 OPENROUTER_API_KEY=your_openrouter_key_here
 OPENROUTER_MODEL=google/gemma-3-4b-it:free
 ```
 
-`OPENROUTER_MODEL` is optional.
-
-## Basic Run
+Run:
 
 ```bash
 ./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf
 ```
 
-Saves feedback to:
+### 2) Ollama Cloud API
 
-- `output/example_page1_feedback.md`
+Create Ollama API key at `https://ollama.com/settings/keys`.
+
+Set in `.env`:
+
+```env
+LLM_PROVIDER=ollama
+OLLAMA_HOST=https://ollama.com
+OLLAMA_API_KEY=your_ollama_api_key
+OLLAMA_MODEL=qwen3-vl:8b
+```
+
+Run:
+
+```bash
+./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --provider ollama
+```
+
+### 3) Ollama Remote Daemon (your Mac)
+
+If your Mac daemon is reachable from WSL:
+
+```env
+LLM_PROVIDER=ollama
+OLLAMA_HOST=http://<mac-ip>:11434
+OLLAMA_MODEL=qwen3-vl:8b
+```
+
+Run:
+
+```bash
+./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --provider ollama
+```
+
+No API key is needed for plain local daemon endpoints unless you add your own proxy/auth.
+
+## Image-First Flow
+
+Convert the existing sample PDF page to a PNG:
+
+```bash
+./.venv/bin/python - <<'PY'
+import fitz
+from pathlib import Path
+
+pdf = Path('test_inputs/example_page1.pdf')
+out = Path('test_inputs/example_page1.png')
+doc = fitz.open(pdf)
+pix = doc[0].get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=False)
+pix.save(out)
+print(out)
+PY
+```
+
+Run with image input using Ollama cloud model through your signed-in local daemon:
+
+```bash
+./.venv/bin/python ocr_script.py test_inputs/example_page1.png \
+  --provider ollama \
+  --model qwen3-vl:235b-cloud \
+  --output output/example_page1_feedback_ollama_cloud_image.md \
+  --raw-output output/example_page1_raw_ollama_cloud_image.json
+```
 
 ## Prompt While Sending The File
 
-Yes, you can pass a custom prompt with `--prompt`.
+Yes, use `--prompt`.
 
 Example: handwritten-only extraction with strict JSON output.
 
@@ -89,48 +145,61 @@ EOF
 )
 
 ./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf \
-  --model qwen/qwen3-vl-8b-instruct \
+  --provider ollama \
+  --model qwen3-vl:8b \
   --prompt "$PROMPT" \
   --output output/example_page1_handwritten_feedback.md \
   --raw-output output/example_page1_handwritten_raw.json
 ```
 
-## Model Options
+## PDF vs Images (Important)
 
-Free (can be rate-limited):
+Short answer: keep the current image pipeline for scanned forms.
 
-- `google/gemma-3-4b-it:free` (default)
-- `google/gemma-3-12b-it:free`
-- `google/gemma-3-27b-it:free`
-- `nvidia/nemotron-nano-12b-v2-vl:free`
+- Many vision endpoints work best with image inputs, not raw PDF bytes.
+- PDF pages are currently rendered to PNG images before sending.
+- For token/cost efficiency, avoid very high DPI for full pages.
 
-Low-cost paid options:
+Recommended defaults:
 
-- `qwen/qwen3-vl-8b-instruct`
-- `meta-llama/llama-3.2-11b-vision-instruct`
-- `google/gemini-2.0-flash-lite-001`
-- `amazon/nova-lite-v1`
+- `--dpi 130` to `--dpi 170` for normal forms.
+- `--max-pages 1` while testing prompts and models.
 
-Set a model per run:
+When to switch strategy:
+
+- born-digital text PDFs: extract text directly first, use vision only for signatures/stamps/handwriting zones.
+- scanned/handwritten PDFs: image-first is the right path.
+
+## CLI Reference
 
 ```bash
-./.venv/bin/python ocr_script.py test_inputs/example_page1.pdf --model qwen/qwen3-vl-8b-instruct
+./.venv/bin/python ocr_script.py --help
 ```
 
-## OpenRouter Troubleshooting
+Main flags:
 
-- `404 No endpoints found`: model is unavailable or retired. Switch to another model.
-- `429 rate-limited`: common on free models. Retry or use a paid model.
-- weak extraction quality: use stricter prompt + higher quality model (for example `qwen/qwen3-vl-8b-instruct` or higher).
+- `--provider openrouter|ollama`
+- `--model <model-name>`
+- `--host <ollama-host>`
+- `--prompt "..."`
+- `--max-pages <n>`
+- `--dpi <n>`
+- `--api-key <key>`
+- `--raw-output <path>`
 
-## Local Ollama Note
+## Output Files
 
-Current script path is OpenRouter-only.
+Default output:
 
-Why local chat apps often fail with attachments:
+- `output/<pdf_stem>_feedback.md`
 
-- many local models are text-only and cannot read images;
-- even vision models require image-aware API payloads, not plain text chat;
-- some chat UIs silently degrade image input when model/tooling is not vision-compatible.
+Optional raw response:
 
-If needed, local Ollama support can be added as a second provider path.
+- path from `--raw-output`
+
+## Troubleshooting
+
+- OpenRouter `404 No endpoints found`: model is unavailable, switch model.
+- OpenRouter `429`: free tier throttling, retry or use paid model.
+- Ollama cloud auth errors: set `OLLAMA_API_KEY` and use `https://ollama.com` host.
+- Poor attachment results in chat tools: model may be text-only or client may not send proper image payload format.
