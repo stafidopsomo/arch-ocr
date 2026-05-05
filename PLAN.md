@@ -511,7 +511,7 @@ Success criteria:
 - Done: each page has enough metadata to choose text-first, vision-first, or hybrid
   processing.
 
-### Milestone 3: Packet CLI - Next
+### Milestone 3: Packet CLI - First Pass Done
 
 Goal: process many files/pages and emit a single packet artifact.
 
@@ -526,11 +526,11 @@ python ocr_script.py packet test_inputs/private/packet_001 \
 
 Tasks:
 
-- Add subcommands or a new `packet` mode.
-- Accept a folder of PDFs/images.
-- Render/process pages one page or one file at a time.
-- Save per-page extraction artifacts.
-- Combine page results into `arch_ocr.packet.v1`.
+- Done: add a `packet` mode.
+- Done: accept a folder of PDFs/images.
+- Done: render/process pages one page at a time.
+- Done: include per-page extraction artifacts in packet output.
+- Done: combine page results into `arch_ocr.packet.v1`.
 - Add resumable output so failed pages can be retried.
 
 Success criteria:
@@ -539,76 +539,114 @@ Success criteria:
 - failed pages are reported, not silently ignored.
 - packet JSON includes all page evidence.
 
-### Milestone 4: Normalization And Clustering
+### Milestone 4: Normalization And Clustering - First Pass Done
 
 Goal: group repeated facts across pages.
 
 Tasks:
 
-- Normalize Greek/Latin whitespace and punctuation.
-- Normalize uppercase/lowercase.
-- Normalize dates.
-- Normalize common address abbreviations.
-- Group exact normalized matches first.
+- Done: normalize Greek/Latin whitespace and punctuation.
+- Done: normalize uppercase/lowercase and strip accents for comparisons.
+- Done: normalize numeric dates to `YYYY-MM-DD`.
+- Done: normalize common address punctuation and labels.
+- Done: group exact normalized matches first.
+- Done: preserve all mentions with `field_ref`, page/file refs, labels, nearby
+  text, confidence, and handwriting/stamp/signature flags.
+- Done: add local `cluster` command for existing packet JSON.
 - Add fuzzy matching for near-duplicates.
 - Keep all mentions even when clustered.
 
 Success criteria:
 
-- repeated names and addresses are counted.
-- obvious variations are grouped or flagged.
-- clusters retain evidence refs.
+- Done: repeated names and addresses are counted.
+- Done: repeated dates, property IDs, and technical values are counted.
+- Done: obvious surface-form variations are flagged inside a normalized cluster.
+- Done: clusters retain evidence refs.
 
-### Milestone 5: Validation Checks
+### Milestone 5: Validation Checks - First Pass Done
 
 Goal: produce useful conclusions from clusters.
 
+Current bridge toward this milestone:
+
+- Done: add deterministic Markdown evidence report from packet JSON.
+- Done: report includes processing totals, cluster summary, repeated evidence,
+  identity/property evidence, errors, warnings, and manual review points.
+- Done: add structured validation checks to packet JSON.
+- Done: report includes validation check status, summary, evidence refs, and
+  details.
+- Later, after we have many more real packets: make checks more
+  domain-specific and role-aware. Do not overfit these rules from the current
+  small fixture set.
+
 Tasks:
 
-- Add checks for names, addresses, offices, engineers/architects, dates,
-  identifiers, signatures, stamps, and unexpected extras.
-- Assign statuses:
+- Done: add `retry-failed` mode so failed packet pages can be retried without
+  rerunning successful pages.
+- Done: add checks for names, addresses, engineers, dates, identifiers,
+  permit numbers, owner evidence, signatures, stamps, handwriting, extraction
+  completeness, and confidence.
+- Done: infer identifier subtypes for KAEK, AFM, ATAK, permit numbers, registry
+  IDs, and unknown identifiers from labels and nearby evidence.
+- Done: add subtype-specific checks for KAEK, AFM, ATAK, registry IDs, and
+  unknown identifiers.
+- Done: assign statuses:
   - `pass`
   - `warning`
-  - `fail`
   - `unknown`
-- Include evidence refs in every check.
-- Produce a short summary from deterministic checks first.
+- Later: add `fail` status for clear contradictions once fuzzy matching and
+  role-specific types are stronger.
+- Done: include evidence refs in every evidence-backed check.
+- Done: produce a short summary from deterministic checks first.
+- Done: add fuzzy near-match groups for address/name/role review without
+  rewriting exact clusters.
+- Done: promote extraction incompleteness and multi-KAEK single-property
+  contradictions to `fail`; keep normal multi-document variation as `warning`.
+- Done: add concise executive summary derived from checks.
+- Later, with a larger corpus: add more domain-specific rules for technical
+  values, permit roles, and document-type requirements.
 
 Success criteria:
 
-- packet output can say what repeats, what varies, and what needs review.
-- no conclusion exists without evidence refs.
+- Done: packet output can say what repeats, what varies, and what needs review.
+- Done: no evidence-backed conclusion exists without evidence refs.
 
-### Milestone 6: Cost Tracking
+### Milestone 6: Cost Tracking - First Pass Done
 
 Goal: understand cost before selling this per client.
 
 Tasks:
 
-- Record per request:
+- Done: record per request when provider usage metadata is available:
   - provider
   - model
   - source file
   - page number
   - input tokens
   - output tokens
-  - image tokens when reported
-  - runtime
+  - cached input tokens when reported
+  - reported provider cost when available
   - estimated cost
-- Aggregate cost per packet.
-- Add a dry-run estimator using page count and last known average token usage.
+- Done: aggregate cost per packet in `cost_summary`.
+- Done: include cost summary in Markdown reports and executive summary.
+- Done: allow pricing overrides with `OCR_COST_INPUT_PER_1M_USD`,
+  `OCR_COST_OUTPUT_PER_1M_USD`, and `OCR_COST_CACHED_INPUT_PER_1M_USD`.
+- Later: record runtime.
+- Later: add a dry-run estimator using page count and last known average token usage.
 - Keep native-text pages cheaper by avoiding full vision extraction when safe.
 
 Success criteria:
 
-- packet output includes estimated cost.
+- Done: packet output includes estimated cost when usage metadata exists.
 - we can estimate how many pages a 50 EUR/month client can process.
-- expensive pages are visible in logs.
+- Later: expensive pages are visible in logs.
 
-### Milestone 7: Provider Comparison And Hybrid Mode
+### Milestone 7: Provider Comparison And Hybrid Mode - Deferred
 
 Goal: decide when Google Vision helps.
+
+Status: skip for now. Gemini is good enough for the first demo path, and Google
+Vision is an optimization/fallback, not a blocker.
 
 Tasks:
 
@@ -639,11 +677,45 @@ Railway deployment shape:
 
 First Railway milestone:
 
-- upload one PDF.
-- render pages.
-- process only first N pages.
-- save JSON output.
-- return job status.
+- Done: add FastAPI demo service skeleton.
+- Done: upload a packet with strict demo limits.
+- Done: render pages.
+- Done: process up to the packet-level page cap.
+- Done: save JSON output and markdown report.
+- Done: return job status.
+- Done: expose cost/usage summary.
+- Done: use Railway Volume-friendly file storage under `OCR_STORAGE_DIR`.
+- Later: add Postgres users/admins/accounts/subscriptions.
+
+Temporary demo/free-tier constraints:
+
+- Maximum uploaded files per packet: 10.
+- Maximum selected pages per packet: 20.
+- Maximum individual upload size: configurable env var.
+- One active processing job at a time per deployment at first.
+- Sequential Gemini calls; no parallel provider calls in the demo worker.
+- Rate limiter controlled by env vars:
+  - `OCR_MAX_FILES_PER_PACKET=10`
+  - `OCR_MAX_PAGES_PER_PACKET=20`
+  - `OCR_PROVIDER_MIN_SECONDS_BETWEEN_CALLS`
+  - `OCR_PROVIDER_MAX_REQUESTS_PER_MINUTE`
+  - `OCR_PROVIDER_MAX_REQUESTS_PER_DAY`
+- Store a local usage ledger for every provider call:
+  - timestamp
+  - provider/model
+  - input/output/total tokens
+  - estimated cost
+  - success/failure
+- If local usage approaches configured limits, delay queued work or return a
+  clear "try again later" status.
+
+Gemini limit notes:
+
+- Official limits are RPM, TPM, and RPD, applied per project, not per API key.
+- Active limits should be checked in AI Studio because they vary by model/tier
+  and can change.
+- For the Railway demo, our app should be stricter than the real free-tier
+  limits so a non-careful user cannot accidentally burn through the quota.
 
 Do not build the final user UI before the packet JSON contract is stable.
 
@@ -664,32 +736,13 @@ UI should show:
 
 ## Immediate Next Task
 
-Start **Milestone 3: Packet CLI**.
+Start **Milestone 8: Railway API** for a controlled demo.
 
-Implement a folder-level packet command that uses the completed triage and
-validated extraction pieces.
+Next implementation focus:
 
-Proposed command:
-
-```bash
-python ocr_script.py packet test_inputs/private/packet_001 \
-  --provider gemini \
-  --max-pages-per-file 2 \
-  --output output/packet_001.json
-```
-
-First packet implementation can be conservative:
-
-1. Run local triage for all files/pages.
-2. Process only the first `N` pages per file.
-3. Save per-page extraction artifacts internally or inside the packet output.
-4. Collect failures per page instead of stopping the whole packet.
-5. Emit `arch_ocr.packet.v1` with:
-   - packet metadata
-   - triage
-   - page extraction artifacts
-   - initial totals
-   - errors
-
-Do not implement clustering in the first packet pass. Packet mode should first
-prove that multi-file, multi-page extraction is reliable and resumable.
+1. Add an API app skeleton, probably FastAPI.
+2. Add packet upload endpoint with the demo/free-tier constraints above.
+3. Add a simple sequential worker/job status flow.
+4. Reuse the existing packet extraction/report functions instead of rewriting
+   the OCR pipeline.
+5. Add local usage ledger and throttle hooks before exposing it to the friend.

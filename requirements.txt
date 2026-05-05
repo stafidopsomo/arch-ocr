@@ -1,3 +1,6 @@
 requests
 python-dotenv
 PyMuPDF
+fastapi
+uvicorn[standard]
+python-multipart

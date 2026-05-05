@@ -48,6 +48,40 @@ python ocr_script.py test_inputs/example_page1.pdf \
   --raw-output output/example_page1_gemini_extraction_raw.json
 ```
 
+Folder-level packet extraction:
+
+```bash
+python ocr_script.py packet test_inputs/private/packet_001 \
+  --provider gemini \
+  --max-pages-per-file 2 \
+  --output output/packet_001.json
+```
+
+Retry only failed pages in an existing packet JSON:
+
+```bash
+python ocr_script.py retry-failed output/packet_001.json
+```
+
+Add or rebuild clusters on an existing packet JSON, with no API calls:
+
+```bash
+python ocr_script.py cluster output/packet_001.json
+```
+
+Generate a deterministic evidence report from packet JSON, with no API calls:
+
+```bash
+python ocr_script.py report output/packet_001.json \
+  --output output/packet_001_report.md
+```
+
+Add or rebuild validation checks on an existing packet JSON, with no API calls:
+
+```bash
+python ocr_script.py validate output/packet_001.json
+```
+
 ## Setup
 
 ```bash
@@ -90,10 +124,117 @@ Extraction artifacts include local page triage metadata, extraction summary
 counts, and source/page references on fields. This is the backend evidence layer
 that packet validation will build on.
 
+Packet mode writes `arch_ocr.packet.v1` JSON with packet metadata, the local
+triage artifact, one validated page extraction artifact per successful page,
+per-page errors, deterministic clusters, and totals. It keeps going when an
+individual page fails. Retry mode reads that same artifact, reprocesses only
+recorded failed pages, and then recalculates totals, clusters, and validation
+checks.
+
+New page extractions also store normalized provider usage metadata when the API
+returns it. Packet JSON includes a `cost_summary` with token totals, provider
+reported cost when available, and estimated USD cost. Existing packet artifacts
+created before this feature will show partial cost summaries until pages are
+reprocessed. Pricing can be overridden without code changes:
+
+```bash
+OCR_COST_INPUT_PER_1M_USD=0.25 \
+OCR_COST_OUTPUT_PER_1M_USD=1.50 \
+OCR_COST_CACHED_INPUT_PER_1M_USD=0.025 \
+python ocr_script.py validate output/packet_001.json
+```
+
+Clusters group repeated normalized names, addresses, dates, permit/property
+identifiers, offices, engineers/architects, owners/applicants, and technical
+values while preserving every original `field_ref`. Fuzzy near-match groups add
+review hints for likely address/name variants without merging or rewriting the
+underlying exact clusters.
+
+Report mode renders a Markdown evidence report from packet JSON and clusters.
+It summarizes processing totals, an executive summary, validation checks, fuzzy
+near-matches, repeated evidence, identity/property evidence, errors, warnings,
+and recommended manual review points.
+
+Validation checks are deterministic and evidence-based. They emit statuses such
+as `pass`, `warning`, `unknown`, or conservative `fail` with `evidence_refs`;
+they do not replace human legal or engineering review.
+
+Identifier validation separates KAEK, AFM, ATAK, permit numbers, registry IDs,
+and unknown identifiers using extracted labels and nearby text. The original
+field evidence remains unchanged; subtype inference is added at the cluster and
+check layer.
+
 `--json-mode` validates the model response before writing output. Invalid or
 missing required fields fail with explicit schema paths.
 
 Raw provider responses can be saved with `--raw-output`.
+
+## Demo Deployment Guardrails
+
+The first Railway deployment is a controlled demo, not the final production
+shape. Keep provider usage conservative while using free or low-tier Gemini:
+
+- maximum 10 uploaded files per packet
+- maximum 20 selected pages per packet
+- one active processing job at a time
+- sequential provider calls, no parallel Gemini calls
+- local provider usage ledger for token/cost/rate visibility
+
+Gemini rate limits are measured in requests per minute, tokens per minute, and
+requests per day, and they apply per Google project. Active limits should be
+checked in AI Studio and mirrored into app env vars instead of hard-coded.
+
+Planned env controls:
+
+```env
+OCR_MAX_FILES_PER_PACKET=10
+OCR_MAX_PAGES_PER_PACKET=20
+OCR_PROVIDER_MIN_SECONDS_BETWEEN_CALLS=4
+OCR_PROVIDER_MAX_REQUESTS_PER_MINUTE=10
+OCR_PROVIDER_MAX_REQUESTS_PER_DAY=100
+```
+
+## Railway Demo Service
+
+The repo includes a FastAPI demo service in `app.py`. It stores uploaded files,
+job metadata, packet JSON, markdown reports, and usage ledger events under
+`OCR_STORAGE_DIR`, so on Railway this should point at a mounted Volume.
+
+Local run:
+
+```bash
+uvicorn app:app --reload
+```
+
+Railway uses the included `Procfile`:
+
+```text
+web: uvicorn app:app --host 0.0.0.0 --port $PORT
+```
+
+Useful endpoints:
+
+- `GET /` - simple upload form.
+- `POST /jobs` - upload packet files and start a background job.
+- `GET /jobs/{job_id}` - job status JSON.
+- `GET /jobs/{job_id}/packet` - result packet JSON.
+- `GET /jobs/{job_id}/report` - result markdown report.
+- `GET /usage` - provider usage ledger summary.
+- `GET /admin?token=...` - simple demo admin page.
+
+Railway setup checklist:
+
+- Create a Railway service from this repo.
+- Add a Railway Volume and mount it at `/data`.
+- Set `OCR_STORAGE_DIR=/data/arch-ocr`.
+- Set `GEMINI_API_KEY` manually in Railway variables.
+- Set `OCR_ADMIN_TOKEN` to a strong random value.
+- Keep `OCR_DEMO_REQUIRE_TOKEN=true`.
+- Set the demo limit env vars from the guardrails above.
+
+For the first demo, the app uses file-backed storage on the Volume rather than
+Postgres. Postgres/user accounts/subscriptions can be added once the friend demo
+proves the workflow.
 
 ## Full Plan
 

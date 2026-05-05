@@ -1,5 +1,6 @@
 # Generated reports and raw provider responses
 output/
+storage/
 
 # Private local document samples
 test_inputs/private/
