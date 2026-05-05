@@ -1,12 +1,9 @@
-# OCR cache (auto-generated, do not commit)
-ocr_cache/
-
-# Output docs
+# Generated reports and raw provider responses
 output/
 
-# Local web app runtime folders
-uploads/
-jobs/
+# Private local document samples
+test_inputs/private/
+samples/private/
 
 # Python
 __pycache__/
@@ -15,6 +12,7 @@ __pycache__/
 .venv/
 venv/
 env/
+.env
 
 # macOS
 .DS_Store
@@ -22,3 +20,4 @@ env/
 # Temp files
 *.tmp
 ~$*
+*:Zone.Identifier
