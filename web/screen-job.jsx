@@ -117,7 +117,7 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
   const msgKey = `job_msg_${status === "rate_limited" ? "throttled" : status === "retrying" ? "throttled" : status === "completed_with_errors" ? "completed" : status === "failed" ? "completed" : status}`;
   const reportUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/report?token=${encodeURIComponent(token || "")}` : "#";
   const packetUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/packet?token=${encodeURIComponent(token || "")}` : "#";
-  const reviewUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/review?token=${encodeURIComponent(token || "")}` : "#";
+  const reviewUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/review?token=${encodeURIComponent(token || "")}&lang=el` : "#";
   const timing = estimateJobTiming({ job, pagesSelected, pagesProcessed, status, lang });
 
   return (

@@ -339,15 +339,108 @@ def _basename(value: Any) -> str:
     return Path(str(value or "")).name
 
 
-def _status_badge(status: Any) -> str:
+def _translate_status(status: Any, lang: str = "en") -> str:
+    value = str(status or "unknown")
+    if lang != "el":
+        return value
+    return {
+        "pass": "επιτυχία",
+        "warning": "προειδοποίηση",
+        "fail": "αποτυχία",
+        "unknown": "άγνωστο",
+        "possible_match": "πιθανή ταύτιση",
+    }.get(value, value)
+
+
+def _translate_check_title(title: Any, lang: str = "en") -> str:
+    value = str(title or "")
+    if lang != "el":
+        return value
+    return {
+        "Extraction completeness": "Πληρότητα εξαγωγής",
+        "Field confidence": "Εμπιστοσύνη πεδίων",
+        "Handwritten content": "Χειρόγραφο περιεχόμενο",
+        "Address consistency": "Συνέπεια διευθύνσεων",
+        "Person name consistency": "Συνέπεια ονομάτων",
+        "Identifier classification": "Ταξινόμηση αναγνωριστικών",
+        "KAEK consistency": "Συνέπεια ΚΑΕΚ",
+        "AFM evidence": "Ένδειξη ΑΦΜ",
+        "ATAK evidence": "Ένδειξη ΑΤΑΚ",
+        "Registry identifier evidence": "Ένδειξη αριθμού μητρώου",
+        "Unknown identifier review": "Έλεγχος άγνωστων αναγνωριστικών",
+        "Date consistency": "Συνέπεια ημερομηνιών",
+        "Permit number evidence": "Ένδειξη αριθμού άδειας",
+        "Owner evidence": "Ένδειξη ιδιοκτήτη",
+        "Engineer evidence": "Ένδειξη μηχανικού",
+        "Signature evidence": "Ένδειξη υπογραφής",
+        "Stamp evidence": "Ένδειξη σφραγίδας",
+    }.get(value, value)
+
+
+def _review_labels(lang: str) -> dict[str, str]:
+    if lang == "el":
+        return {
+            "title_prefix": "προεπισκόπηση φακέλου",
+            "markdown": "Markdown αναφορά",
+            "json": "Packet JSON",
+            "back": "Πίσω στο job",
+            "admin": "Διαχείριση",
+            "pages": "Σελίδες",
+            "fields": "Πεδία",
+            "checks": "Έλεγχοι",
+            "cost": "Εκτ. κόστος",
+            "executive": "Σύνοψη",
+            "validation": "Έλεγχοι εγκυρότητας",
+            "priorities": "Προτεραιότητες ελέγχου",
+            "source_files": "Αρχεία πηγής",
+            "fuzzy": "Πιθανές ταυτίσεις",
+            "clusters": "Ομάδες τιμών",
+            "errors": "Σφάλματα",
+            "pages_word": "σελίδες",
+            "none": "Δεν καταγράφηκε κάτι.",
+            "no_checks": "Δεν καταγράφηκαν έλεγχοι.",
+            "no_clusters": "Δεν καταγράφηκαν ομάδες τιμών.",
+            "no_fuzzy": "Δεν καταγράφηκαν πιθανές ταυτίσεις.",
+            "no_errors": "Δεν καταγράφηκαν σφάλματα εξαγωγής σελίδων.",
+            "language_note": "Η δομή της αναφοράς εμφανίζεται στα ελληνικά. Κάποια αυτόματα summaries/evidence παραμένουν όπως παράχθηκαν από τον extractor για να μη χαθεί ακρίβεια.",
+        }
+    return {
+        "title_prefix": "packet review",
+        "markdown": "Markdown report",
+        "json": "Packet JSON",
+        "back": "Back to job",
+        "admin": "Admin",
+        "pages": "Pages",
+        "fields": "Fields",
+        "checks": "Checks",
+        "cost": "Estimated cost",
+        "executive": "Executive Summary",
+        "validation": "Validation Checks",
+        "priorities": "Review Priorities",
+        "source_files": "Source Files",
+        "fuzzy": "Fuzzy Review",
+        "clusters": "Clusters",
+        "errors": "Errors",
+        "pages_word": "pages",
+        "none": "None recorded.",
+        "no_checks": "No validation checks recorded.",
+        "no_clusters": "No clusters recorded.",
+        "no_fuzzy": "No fuzzy near-match groups recorded.",
+        "no_errors": "No page extraction errors recorded.",
+        "language_note": "",
+    }
+
+
+def _status_badge(status: Any, lang: str = "en") -> str:
     safe = html.escape(str(status or "unknown"))
     cls = re.sub(r"[^a-z0-9_-]+", "-", safe.lower())
-    return f'<span class="badge badge-{cls}">{safe}</span>'
+    label = html.escape(_translate_status(status, lang))
+    return f'<span class="badge badge-{cls}">{label}</span>'
 
 
-def _list_items(values: Any, limit: int = 8) -> str:
+def _list_items(values: Any, limit: int = 8, empty_text: str = "None recorded.") -> str:
     if not isinstance(values, list) or not values:
-        return '<p class="muted">None recorded.</p>'
+        return f'<p class="muted">{html.escape(empty_text)}</p>'
     items = []
     for value in values[:limit]:
         items.append(f"<li>{html.escape(str(value))}</li>")
@@ -356,26 +449,27 @@ def _list_items(values: Any, limit: int = 8) -> str:
     return f"<ul>{''.join(items)}</ul>"
 
 
-def _render_check_cards(checks: Any) -> str:
+def _render_check_cards(checks: Any, lang: str = "en") -> str:
+    labels = _review_labels(lang)
     if not isinstance(checks, list) or not checks:
-        return '<p class="muted">No validation checks recorded.</p>'
+        return f'<p class="muted">{html.escape(labels["no_checks"])}</p>'
     order = {"fail": 0, "warning": 1, "unknown": 2, "pass": 3}
     sorted_checks = sorted(checks, key=lambda c: order.get(str(c.get("status", "unknown")), 99) if isinstance(c, dict) else 99)
     cards = []
     for check in sorted_checks:
         if not isinstance(check, dict):
             continue
-        title = html.escape(str(check.get("title") or check.get("check_id") or "Check"))
+        title = html.escape(_translate_check_title(check.get("title") or check.get("check_id") or "Check", lang))
         summary = html.escape(str(check.get("summary") or ""))
         evidence_refs = check.get("evidence_refs") if isinstance(check.get("evidence_refs"), list) else []
         evidence = " ".join(f'<code>{html.escape(str(ref))}</code>' for ref in evidence_refs[:8])
         if len(evidence_refs) > 8:
             evidence += f' <span class="muted">+{len(evidence_refs) - 8} more</span>'
-        details = _list_items(check.get("details"), limit=6)
+        details = _list_items(check.get("details"), limit=6, empty_text=labels["none"])
         cards.append(
             f"""
             <article class="card check-card">
-              <div class="card-head">{_status_badge(check.get("status"))}<h3>{title}</h3></div>
+              <div class="card-head">{_status_badge(check.get("status"), lang)}<h3>{title}</h3></div>
               <p>{summary}</p>
               {details}
               <div class="refs">{evidence}</div>
@@ -385,9 +479,10 @@ def _render_check_cards(checks: Any) -> str:
     return "".join(cards)
 
 
-def _render_cluster_cards(clusters: Any) -> str:
+def _render_cluster_cards(clusters: Any, lang: str = "en") -> str:
+    labels = _review_labels(lang)
     if not isinstance(clusters, list) or not clusters:
-        return '<p class="muted">No clusters recorded.</p>'
+        return f'<p class="muted">{html.escape(labels["no_clusters"])}</p>'
     cards = []
     for cluster in clusters[:24]:
         if not isinstance(cluster, dict):
@@ -412,9 +507,10 @@ def _render_cluster_cards(clusters: Any) -> str:
     return "".join(cards)
 
 
-def _render_fuzzy_groups(groups: Any) -> str:
+def _render_fuzzy_groups(groups: Any, lang: str = "en") -> str:
+    labels = _review_labels(lang)
     if not isinstance(groups, list) or not groups:
-        return '<p class="muted">No fuzzy near-match groups recorded.</p>'
+        return f'<p class="muted">{html.escape(labels["no_fuzzy"])}</p>'
     cards = []
     for group in groups:
         if not isinstance(group, dict):
@@ -423,16 +519,23 @@ def _render_fuzzy_groups(groups: Any) -> str:
         cards.append(
             f"""
             <article class="mini-card">
-              <div>{_status_badge(group.get("status"))} <span class="muted">{html.escape(str(group.get("field_type") or ""))}</span></div>
-              {_list_items(values, limit=6)}
+              <div>{_status_badge(group.get("status"), lang)} <span class="muted">{html.escape(str(group.get("field_type") or ""))}</span></div>
+              {_list_items(values, limit=6, empty_text=labels["none"])}
             </article>
             """
         )
     return "".join(cards)
 
 
-def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "") -> str:
-    token_query = f"?token={html.escape(token)}" if token else ""
+def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "", lang: str = "el") -> str:
+    lang = "el" if lang == "el" else "en"
+    labels = _review_labels(lang)
+    query_parts = []
+    if token:
+        query_parts.append(f"token={html.escape(token)}")
+    query_parts.append(f"lang={lang}")
+    token_query = f"?{'&'.join(query_parts)}" if query_parts else ""
+    token_only_query = f"?token={html.escape(token)}" if token else ""
     executive = packet.get("executive_summary") if isinstance(packet.get("executive_summary"), dict) else {}
     totals = packet.get("totals") if isinstance(packet.get("totals"), dict) else {}
     check_summary = packet.get("check_summary") if isinstance(packet.get("check_summary"), dict) else {}
@@ -445,21 +548,23 @@ def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "") 
     provider = html.escape(str(packet.get("provider_config", {}).get("provider") or packet.get("provider") or ""))
     model = html.escape(str(packet.get("provider_config", {}).get("model") or packet.get("model") or ""))
     status_counts = " ".join(
-        f"{_status_badge(status)} <strong>{html.escape(str(count))}</strong>"
+        f"{_status_badge(status, lang)} <strong>{html.escape(str(count))}</strong>"
         for status, count in checks_by_status.items()
     )
     file_rows = "".join(
-        f"<li><span>{html.escape(_basename(file.get('source_file') if isinstance(file, dict) else file))}</span><span class='muted'>{html.escape(str(file.get('page_count', '?') if isinstance(file, dict) else '?'))} pages</span></li>"
+        f"<li><span>{html.escape(_basename(file.get('source_file') if isinstance(file, dict) else file))}</span><span class='muted'>{html.escape(str(file.get('page_count', '?') if isinstance(file, dict) else '?'))} {html.escape(labels['pages_word'])}</span></li>"
         for file in source_files
     )
     error_cards = "".join(
         f"<article class='mini-card'><strong>{html.escape(str(error.get('page_id') or error.get('source_file') or 'page'))}</strong><p>{html.escape(str(error.get('error') or error))}</p></article>"
         for error in errors
         if isinstance(error, dict)
-    ) or '<p class="muted">No page extraction errors recorded.</p>'
-    findings = _list_items(executive.get("key_findings"), limit=8)
-    priorities = _list_items(executive.get("review_priorities"), limit=8)
+    ) or f'<p class="muted">{html.escape(labels["no_errors"])}</p>'
+    findings = _list_items(executive.get("key_findings"), limit=8, empty_text=labels["none"])
+    priorities = _list_items(executive.get("review_priorities"), limit=8, empty_text=labels["none"])
     estimated_cost = float(cost.get("estimated_cost_usd") or 0.0)
+    lang_switch = "en" if lang == "el" else "el"
+    lang_switch_label = "English" if lang == "el" else "Ελληνικά"
     return f"""
     <html>
       <head>
@@ -504,53 +609,55 @@ def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "") 
       </head>
       <body>
         <header>
-          <div class="muted mono">arch-ocr packet review · {html.escape(job_id)}</div>
+          <div class="muted mono">arch-ocr {html.escape(labels['title_prefix'])} · {html.escape(job_id)}</div>
           <h1>{headline}</h1>
           <div class="muted">{created_at} · {provider} · {model}</div>
+          {f'<p class="muted">{html.escape(labels["language_note"])}</p>' if labels["language_note"] else ''}
           <div class="actions">
-            <a class="btn btn-primary" href="/jobs/{html.escape(job_id)}/report{token_query}">Markdown report</a>
-            <a class="btn" href="/jobs/{html.escape(job_id)}/packet{token_query}">Packet JSON</a>
-            <a class="btn" href="/design/arch-ocr.html?screen=job&job={html.escape(job_id)}">Back to job</a>
-            <a class="btn" href="/admin{token_query}">Admin</a>
+            <a class="btn btn-primary" href="/jobs/{html.escape(job_id)}/report{token_only_query}">{html.escape(labels['markdown'])}</a>
+            <a class="btn" href="/jobs/{html.escape(job_id)}/packet{token_only_query}">{html.escape(labels['json'])}</a>
+            <a class="btn" href="/jobs/{html.escape(job_id)}/review?token={html.escape(token)}&lang={lang_switch}">{lang_switch_label}</a>
+            <a class="btn" href="/design/arch-ocr.html?screen=job&job={html.escape(job_id)}">{html.escape(labels['back'])}</a>
+            <a class="btn" href="/admin{token_only_query}">{html.escape(labels['admin'])}</a>
           </div>
         </header>
         <main>
           <section class="stats">
-            <div class="stat"><div class="muted">Pages</div><div class="value">{html.escape(str(totals.get("pages_processed", 0)))} / {html.escape(str(totals.get("pages_total", 0)))}</div></div>
-            <div class="stat"><div class="muted">Fields</div><div class="value">{html.escape(str(totals.get("fields_total", 0)))}</div></div>
-            <div class="stat"><div class="muted">Checks</div><div class="value">{html.escape(str(check_summary.get("check_count", 0)))}</div><div>{status_counts}</div></div>
-            <div class="stat"><div class="muted">Estimated cost</div><div class="value">${estimated_cost:.6f}</div></div>
+            <div class="stat"><div class="muted">{html.escape(labels['pages'])}</div><div class="value">{html.escape(str(totals.get("pages_processed", 0)))} / {html.escape(str(totals.get("pages_total", 0)))}</div></div>
+            <div class="stat"><div class="muted">{html.escape(labels['fields'])}</div><div class="value">{html.escape(str(totals.get("fields_total", 0)))}</div></div>
+            <div class="stat"><div class="muted">{html.escape(labels['checks'])}</div><div class="value">{html.escape(str(check_summary.get("check_count", 0)))}</div><div>{status_counts}</div></div>
+            <div class="stat"><div class="muted">{html.escape(labels['cost'])}</div><div class="value">${estimated_cost:.6f}</div></div>
           </section>
           <div class="grid">
             <div>
               <section class="section card">
-                <h2>Executive Summary</h2>
+                <h2>{html.escape(labels['executive'])}</h2>
                 {findings}
               </section>
               <section class="section">
-                <h2>Validation Checks</h2>
-                {_render_check_cards(packet.get("checks"))}
+                <h2>{html.escape(labels['validation'])}</h2>
+                {_render_check_cards(packet.get("checks"), lang)}
               </section>
               <section class="section card">
-                <h2>Review Priorities</h2>
+                <h2>{html.escape(labels['priorities'])}</h2>
                 {priorities}
               </section>
             </div>
             <aside>
               <section class="section card">
-                <h2>Source Files</h2>
+                <h2>{html.escape(labels['source_files'])}</h2>
                 <ul class="file-list">{file_rows}</ul>
               </section>
               <section class="section card">
-                <h2>Fuzzy Review</h2>
-                {_render_fuzzy_groups(packet.get("fuzzy_groups"))}
+                <h2>{html.escape(labels['fuzzy'])}</h2>
+                {_render_fuzzy_groups(packet.get("fuzzy_groups"), lang)}
               </section>
               <section class="section card">
-                <h2>Clusters</h2>
-                {_render_cluster_cards(packet.get("clusters"))}
+                <h2>{html.escape(labels['clusters'])}</h2>
+                {_render_cluster_cards(packet.get("clusters"), lang)}
               </section>
               <section class="section card">
-                <h2>Errors</h2>
+                <h2>{html.escape(labels['errors'])}</h2>
                 {error_cards}
               </section>
             </aside>
@@ -838,6 +945,18 @@ async def create_job(
     if "text/html" in accept_header:
         return RedirectResponse(_job_view_url(job_id, token or ""), status_code=303)
     return JSONResponse(job, status_code=202)
+
+
+@app.get("/jobs")
+def list_jobs(request: Request) -> dict[str, Any]:
+    _require_demo_access(request)
+    jobs = []
+    for path in sorted(JOBS_DIR.glob("*/job.json"), reverse=True):
+        try:
+            jobs.append(_read_json(path))
+        except Exception:
+            continue
+    return {"jobs": jobs[:100]}
 
 
 @app.get("/jobs/{job_id}/view", response_class=HTMLResponse)

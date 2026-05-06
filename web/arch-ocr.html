@@ -22,6 +22,7 @@
 <script type="text/babel" src="screen-login.jsx"></script>
 <script type="text/babel" src="screen-upload.jsx"></script>
 <script type="text/babel" src="screen-job.jsx"></script>
+<script type="text/babel" src="screen-packets.jsx"></script>
 <script type="text/babel" src="tweaks-panel.jsx"></script>
 
 <script type="text/babel" data-presets="env,react">
@@ -46,7 +47,7 @@ function App() {
   useEffect(() => {
     const p = new URLSearchParams(location.search);
     const s = p.get("screen");
-    if (s && ["login","new","job"].includes(s)) {
+    if (s && ["login","new","job","dashboard","packets"].includes(s)) {
       setScreen(s);
       if (s !== "login") setAuthed(true);
     }
@@ -151,10 +152,11 @@ function App() {
 
         {screen !== "login" && (
           <AppShell
-            screen={screen === "new" ? "new" : screen === "job" ? "new" : "dashboard"}
+            screen={screen === "job" ? "packets" : screen}
             onScreen={(k) => {
               if (k === "new") navigate("new");
-              else if (k === "dashboard") navigate("new"); // unimplemented screens fall back
+              else if (k === "dashboard") navigate("dashboard", "");
+              else if (k === "packets") navigate("packets", "");
               else if (k === "usage") window.location.href = `/usage?token=${encodeURIComponent(token)}`;
               else navigate(k);
             }}
@@ -166,6 +168,18 @@ function App() {
               <UploadScreen
                 token={token}
                 onStart={startJob}
+              />
+            )}
+            {(screen === "dashboard" || screen === "packets") && (
+              <PacketsScreen
+                token={token}
+                mode={screen}
+                onNewPacket={() => navigate("new", "")}
+                onOpenJob={(nextJobId) => {
+                  setJobId(nextJobId);
+                  localStorage.setItem("archOcrJobId", nextJobId);
+                  navigate("job", nextJobId);
+                }}
               />
             )}
             {screen === "job" && (
