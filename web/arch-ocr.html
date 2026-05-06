@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>arch-ocr — packet validation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="i18n.jsx"></script>
+<script type="text/babel" src="atoms.jsx"></script>
+<script type="text/babel" src="shell.jsx"></script>
+<script type="text/babel" src="screen-login.jsx"></script>
+<script type="text/babel" src="screen-upload.jsx"></script>
+<script type="text/babel" src="screen-job.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+
+<script type="text/babel" data-presets="env,react">
+const { useState, useEffect } = React;
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "lang": "en",
+  "jobStatus": "completed_with_errors",
+  "overallStatus": "fail"
+}/*EDITMODE-END*/;
+
+function App() {
+  const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const [screen, setScreen] = useState("login"); // login | new | job
+  const [authed, setAuthed] = useState(false);
+  const [token, setToken] = useState(() => localStorage.getItem("archOcrDemoToken") || "");
+  const [jobId, setJobId] = useState(() => localStorage.getItem("archOcrJobId") || "");
+  const [job, setJob] = useState(null);
+  const [jobError, setJobError] = useState("");
+
+  // sync ?screen= for deep-linking screenshots
+  useEffect(() => {
+    const p = new URLSearchParams(location.search);
+    const s = p.get("screen");
+    if (s && ["login","new","job"].includes(s)) {
+      setScreen(s);
+      if (s !== "login") setAuthed(true);
+    }
+    const jid = p.get("job");
+    if (jid) {
+      setJobId(jid);
+      localStorage.setItem("archOcrJobId", jid);
+      setAuthed(true);
+      setScreen("job");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!token) return;
+    localStorage.setItem("archOcrDemoToken", token);
+  }, [token]);
+
+  useEffect(() => {
+    if (!jobId || !token) return;
+    let stopped = false;
+
+    async function loadJob() {
+      try {
+        const res = await fetch(`/jobs/${encodeURIComponent(jobId)}?token=${encodeURIComponent(token)}`, {
+          headers: { "accept": "application/json" },
+        });
+        if (!res.ok) throw new Error(`Job status failed (${res.status})`);
+        const data = await res.json();
+        if (!stopped) {
+          setJob(data);
+          setJobError("");
+          setTweak("jobStatus", data.status || "queued");
+        }
+      } catch (err) {
+        if (!stopped) setJobError(err.message || String(err));
+      }
+    }
+
+    loadJob();
+    const id = setInterval(loadJob, 3000);
+    return () => {
+      stopped = true;
+      clearInterval(id);
+    };
+  }, [jobId, token]);
+
+  function navigate(s, nextJobId = jobId) {
+    setScreen(s);
+    const p = new URLSearchParams(location.search);
+    p.set("screen", s);
+    if (nextJobId) p.set("job", nextJobId);
+    else p.delete("job");
+    history.replaceState(null, "", "?" + p.toString());
+  }
+
+  function signIn(nextToken) {
+    setToken(nextToken);
+    setAuthed(true);
+    navigate(jobId ? "job" : "new");
+  }
+
+  function signOut() {
+    localStorage.removeItem("archOcrDemoToken");
+    setToken("");
+    setAuthed(false);
+    setJob(null);
+    navigate("login", "");
+  }
+
+  async function startJob(files, title) {
+    const form = new FormData();
+    files.forEach((file) => form.append("files", file));
+    form.append("token", token);
+    if (title) form.append("title", title);
+
+    const res = await fetch("/jobs", {
+      method: "POST",
+      body: form,
+      headers: { "accept": "application/json" },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `Upload failed (${res.status})`);
+    }
+    localStorage.setItem("archOcrJobId", data.job_id);
+    setJobId(data.job_id);
+    setJob(data);
+    navigate("job", data.job_id);
+  }
+
+  return (
+    <I18nProvider lang={t.lang}>
+      <>
+        {screen === "login" && (
+          <LoginScreen
+            lang={t.lang}
+            onLang={(l) => setTweak("lang", l)}
+            initialToken={token}
+            onSignIn={signIn}
+          />
+        )}
+
+        {screen !== "login" && (
+          <AppShell
+            screen={screen === "new" ? "new" : screen === "job" ? "new" : "dashboard"}
+            onScreen={(k) => {
+              if (k === "new") navigate("new");
+              else if (k === "dashboard") navigate("new"); // unimplemented screens fall back
+              else if (k === "usage") window.location.href = `/usage?token=${encodeURIComponent(token)}`;
+              else navigate(k);
+            }}
+            lang={t.lang}
+            onLang={(l) => setTweak("lang", l)}
+            onSignOut={signOut}
+          >
+            {screen === "new" && (
+              <UploadScreen
+                token={token}
+                onStart={startJob}
+              />
+            )}
+            {screen === "job" && (
+              <JobScreen
+                status={job?.status || t.jobStatus}
+                job={job}
+                jobId={jobId}
+                token={token}
+                error={jobError}
+                onStatus={(s) => setTweak("jobStatus", s)}
+                onBack={() => navigate("new", "")}
+                onOpenReview={() => {
+                  if (jobId) window.location.href = `/jobs/${encodeURIComponent(jobId)}/packet?token=${encodeURIComponent(token)}`;
+                }}
+              />
+            )}
+          </AppShell>
+        )}
+
+        <TweaksPanel title="Tweaks">
+          <TweakSection title="Screen">
+            <TweakRadio
+              value={screen}
+              onChange={navigate}
+              options={[
+                { value: "login", label: "Login" },
+                { value: "new",   label: "Upload" },
+                { value: "job",   label: "Live job" },
+              ]}
+            />
+          </TweakSection>
+
+          <TweakSection title="Language">
+            <TweakRadio
+              value={t.lang}
+              onChange={(v) => setTweak("lang", v)}
+              options={[{ value: "en", label: "English" }, { value: "el", label: "Ελληνικά" }]}
+            />
+          </TweakSection>
+
+          {screen === "job" && (
+            <TweakSection title="Job status">
+              <TweakSelect
+                value={t.jobStatus}
+                onChange={(v) => setTweak("jobStatus", v)}
+                options={[
+                  { value: "queued",       label: "queued" },
+                  { value: "triaging",     label: "triaging" },
+                  { value: "processing",   label: "processing" },
+                  { value: "throttled",    label: "throttled" },
+                  { value: "rate_limited", label: "rate_limited" },
+                  { value: "retrying",     label: "retrying" },
+                  { value: "completed",    label: "completed" },
+                  { value: "completed_with_errors", label: "completed_with_errors" },
+                  { value: "failed",       label: "failed" },
+                ]}
+              />
+            </TweakSection>
+          )}
+
+          <TweakSection title="Overall packet status (review)">
+            <TweakRadio
+              value={t.overallStatus}
+              onChange={(v) => setTweak("overallStatus", v)}
+              options={[
+                { value: "pass", label: "Pass" },
+                { value: "warning", label: "Warn" },
+                { value: "fail", label: "Fail" },
+              ]}
+            />
+          </TweakSection>
+        </TweaksPanel>
+      </>
+    </I18nProvider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("app")).render(<App />);
+</script>
+
+</body>
+</html>

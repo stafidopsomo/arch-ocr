@@ -1,0 +1,173 @@
+/* Bilingual EL/EN strings + helpers. Loaded as Babel. */
+
+const MESSAGES = {
+  en: {
+    brand: "arch-ocr",
+    tagline: "Evidence-based packet validation",
+    // login
+    login_title: "Sign in",
+    login_subtitle: "Continue to your packet workspace.",
+    username: "Username",
+    password: "Password",
+    sign_in: "Sign in",
+    contact_admin: "Contact your administrator for an account.",
+    forgot_note: "Lost access? Your administrator can reset your password.",
+    invalid_creds: "Invalid credentials.",
+    remember: "Keep me signed in for 7 days",
+    // nav
+    nav_dashboard: "Dashboard",
+    nav_new: "New Packet",
+    nav_packets: "Packets",
+    nav_usage: "Usage",
+    nav_admin: "Admin",
+    nav_settings: "Settings",
+    sign_out: "Sign out",
+    // upload
+    upload_title: "New packet",
+    upload_sub: "Upload up to 10 files, 20 pages total. PDF or images.",
+    upload_drop: "Drop files here or click to browse",
+    upload_hint: "PDF · PNG · JPG · TIFF · WebP — up to 100 MB total",
+    upload_title_label: "Packet title (optional)",
+    upload_title_ph: "e.g. Παπαδόπουλος — Νίκαια permit review",
+    upload_files: "Files",
+    upload_files_count: (n, m) => `${n} of ${m} files`,
+    upload_pages_count: (n, m) => `${n} of ${m} pages estimated`,
+    upload_remove: "Remove",
+    upload_submit: "Start validation",
+    upload_processing: "Processing — one packet at a time globally.",
+    upload_limit_files: "Maximum 10 files per packet.",
+    upload_limit_pages: "Maximum 20 pages per packet. Reduce or split the packet.",
+    // job
+    job_title: "Validating packet",
+    job_status_queued: "Queued",
+    job_status_triaging: "Triaging pages",
+    job_status_processing: "Extracting evidence",
+    job_status_throttled: "Throttled",
+    job_status_retrying: "Retrying",
+    job_status_rate_limited: "Rate-limited",
+    job_status_completed: "Completed",
+    job_status_completed_with_errors: "Completed with errors",
+    job_status_failed: "Failed",
+    job_msg_queued: "Waiting for the worker. One packet runs at a time.",
+    job_msg_triaging: "Inspecting page kinds and detecting embedded text.",
+    job_msg_processing: "Calling Gemini per page. Min 4 s between calls.",
+    job_msg_throttled: "Provider rate window reached. Resuming shortly.",
+    job_msg_completed: "All pages extracted. Opening review…",
+    job_pages_done: (a, b) => `${a} of ${b} pages`,
+    job_step_triage: "Triage",
+    job_step_extract: "Evidence extraction",
+    job_step_cluster: "Cluster & validate",
+    job_files: "Files",
+    job_page_pending: "Pending",
+    job_page_processing: "Processing",
+    job_page_done: "Done",
+    job_page_failed: "Failed",
+    job_open_review: "Open review",
+    job_back: "Back to packets",
+    job_rate_window: (s) => `Resuming in ${s} s`,
+    job_provider_min: "Min 4 s between provider calls.",
+    job_global_lock: "Global worker lock — one packet at a time.",
+    job_estimated: "Est. completion",
+    // shared
+    pages: "pages",
+    files: "files",
+    cancel: "Cancel",
+    confirm: "Confirm",
+    // tweaks
+    tweaks_lang: "Interface language",
+    tweaks_job_status: "Job status (live screen)",
+    tweaks_overall: "Overall result (review screen)",
+  },
+  el: {
+    brand: "arch-ocr",
+    tagline: "Έλεγχος εγγράφων με αποδείξεις",
+    login_title: "Σύνδεση",
+    login_subtitle: "Συνέχεια στον χώρο εργασίας σας.",
+    username: "Όνομα χρήστη",
+    password: "Κωδικός",
+    sign_in: "Σύνδεση",
+    contact_admin: "Επικοινωνήστε με τον διαχειριστή για λογαριασμό.",
+    forgot_note: "Δεν έχετε πρόσβαση; Ο διαχειριστής επαναφέρει τον κωδικό.",
+    invalid_creds: "Μη έγκυρα στοιχεία.",
+    remember: "Παραμονή σύνδεσης για 7 ημέρες",
+    nav_dashboard: "Πίνακας",
+    nav_new: "Νέος φάκελος",
+    nav_packets: "Φάκελοι",
+    nav_usage: "Χρήση",
+    nav_admin: "Διαχείριση",
+    nav_settings: "Ρυθμίσεις",
+    sign_out: "Αποσύνδεση",
+    upload_title: "Νέος φάκελος",
+    upload_sub: "Έως 10 αρχεία, 20 σελίδες συνολικά. PDF ή εικόνες.",
+    upload_drop: "Σύρετε αρχεία ή πατήστε για επιλογή",
+    upload_hint: "PDF · PNG · JPG · TIFF · WebP — έως 100 MB συνολικά",
+    upload_title_label: "Τίτλος φακέλου (προαιρετικό)",
+    upload_title_ph: "π.χ. Παπαδόπουλος — έλεγχος αδείας Νίκαια",
+    upload_files: "Αρχεία",
+    upload_files_count: (n, m) => `${n} από ${m} αρχεία`,
+    upload_pages_count: (n, m) => `${n} από ${m} σελίδες εκτίμηση`,
+    upload_remove: "Αφαίρεση",
+    upload_submit: "Έναρξη ελέγχου",
+    upload_processing: "Σε επεξεργασία — ένας φάκελος κάθε φορά.",
+    upload_limit_files: "Μέγιστο 10 αρχεία ανά φάκελο.",
+    upload_limit_pages: "Μέγιστο 20 σελίδες. Μειώστε ή χωρίστε τον φάκελο.",
+    job_title: "Έλεγχος φακέλου",
+    job_status_queued: "Σε αναμονή",
+    job_status_triaging: "Διαλογή σελίδων",
+    job_status_processing: "Εξαγωγή αποδείξεων",
+    job_status_throttled: "Περιορισμός ρυθμού",
+    job_status_retrying: "Επανάληψη",
+    job_status_rate_limited: "Όριο ρυθμού",
+    job_status_completed: "Ολοκληρώθηκε",
+    job_status_completed_with_errors: "Ολοκληρώθηκε με σφάλματα",
+    job_status_failed: "Απέτυχε",
+    job_msg_queued: "Αναμονή για τον επεξεργαστή. Ένας φάκελος ανά φορά.",
+    job_msg_triaging: "Έλεγχος τύπου σελίδων και ενσωματωμένου κειμένου.",
+    job_msg_processing: "Κλήση Gemini ανά σελίδα. Ελάχιστα 4 δευτ. μεταξύ κλήσεων.",
+    job_msg_throttled: "Επιτεύχθηκε όριο ρυθμού παρόχου. Συνέχιση σύντομα.",
+    job_msg_completed: "Όλες οι σελίδες εξήχθησαν. Άνοιγμα προεπισκόπησης…",
+    job_pages_done: (a, b) => `${a} από ${b} σελίδες`,
+    job_step_triage: "Διαλογή",
+    job_step_extract: "Εξαγωγή αποδείξεων",
+    job_step_cluster: "Ομαδοποίηση & έλεγχοι",
+    job_files: "Αρχεία",
+    job_page_pending: "Σε αναμονή",
+    job_page_processing: "Σε επεξεργασία",
+    job_page_done: "Ολοκληρ.",
+    job_page_failed: "Σφάλμα",
+    job_open_review: "Άνοιγμα προεπισκόπησης",
+    job_back: "Πίσω στους φακέλους",
+    job_rate_window: (s) => `Συνέχιση σε ${s} δευτ.`,
+    job_provider_min: "Ελάχ. 4 δευτ. μεταξύ κλήσεων παρόχου.",
+    job_global_lock: "Καθολικό κλείδωμα — ένας φάκελος κάθε φορά.",
+    job_estimated: "Εκτ. ολοκλήρωσης",
+    pages: "σελίδες",
+    files: "αρχεία",
+    cancel: "Άκυρο",
+    confirm: "Επιβεβαίωση",
+    tweaks_lang: "Γλώσσα",
+    tweaks_job_status: "Κατάσταση εργασίας",
+    tweaks_overall: "Συνολικό αποτέλεσμα",
+  },
+};
+
+const I18nCtx = React.createContext({ lang: "en", t: (k) => k });
+
+function I18nProvider({ lang, children }) {
+  const t = React.useCallback((key, ...args) => {
+    const m = MESSAGES[lang] || MESSAGES.en;
+    const v = m[key];
+    if (typeof v === "function") return v(...args);
+    if (typeof v === "string") return v;
+    return key;
+  }, [lang]);
+  return <I18nCtx.Provider value={{ lang, t }}>{children}</I18nCtx.Provider>;
+}
+
+function useT() {
+  return React.useContext(I18nCtx);
+}
+
+window.I18nProvider = I18nProvider;
+window.useT = useT;
+window.MESSAGES = MESSAGES;

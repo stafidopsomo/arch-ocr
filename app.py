@@ -15,6 +15,7 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 import ocr_script
 
@@ -32,6 +33,9 @@ MAX_UPLOAD_MB = int(os.getenv("OCR_MAX_UPLOAD_MB", "100"))
 MIN_SECONDS_BETWEEN_CALLS = float(os.getenv("OCR_PROVIDER_MIN_SECONDS_BETWEEN_CALLS", "4"))
 MAX_REQUESTS_PER_MINUTE = int(os.getenv("OCR_PROVIDER_MAX_REQUESTS_PER_MINUTE", "10"))
 MAX_REQUESTS_PER_DAY = int(os.getenv("OCR_PROVIDER_MAX_REQUESTS_PER_DAY", "100"))
+MAX_PROVIDER_RETRIES = int(os.getenv("OCR_PROVIDER_MAX_RETRIES", "2"))
+PROVIDER_RETRY_BASE_SECONDS = float(os.getenv("OCR_PROVIDER_RETRY_BASE_SECONDS", "20"))
+PROVIDER_RETRY_MAX_SECONDS = float(os.getenv("OCR_PROVIDER_RETRY_MAX_SECONDS", "120"))
 ADMIN_TOKEN = (os.getenv("OCR_ADMIN_TOKEN") or "").strip()
 DEMO_REQUIRE_TOKEN = os.getenv("OCR_DEMO_REQUIRE_TOKEN", "true").lower() != "false"
 
@@ -45,6 +49,10 @@ LANGUAGE_HINTS = os.getenv("GOOGLE_VISION_LANGUAGE_HINTS", "el,en")
 app = FastAPI(title=APP_NAME)
 worker_lock = threading.Lock()
 ledger_lock = threading.Lock()
+
+_web_dir = Path(__file__).parent / "web"
+if _web_dir.is_dir():
+    app.mount("/design", StaticFiles(directory=str(_web_dir), html=True), name="design")
 
 
 def _now() -> str:
@@ -225,6 +233,8 @@ def _record_provider_event(
     status: str,
     usage: dict[str, Any] | None = None,
     error: str | None = None,
+    attempt: int | None = None,
+    max_attempts: int | None = None,
 ) -> None:
     usage = usage or {}
     _append_usage_event(
@@ -243,8 +253,38 @@ def _record_provider_event(
             "estimated_cost_usd": usage.get("estimated_cost_usd"),
             "reported_cost_usd": usage.get("reported_cost_usd"),
             "error": error,
+            "attempt": attempt,
+            "max_attempts": max_attempts,
         }
     )
+
+
+def _is_transient_provider_error(error_message: str) -> bool:
+    normalized = error_message.lower()
+    transient_markers = (
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "deadline",
+        "high demand",
+        "overload",
+        "overloaded",
+        "quota",
+        "rate limit",
+        "resource exhausted",
+        "temporarily unavailable",
+        "timeout",
+        "timed out",
+        "try again",
+        "unavailable",
+    )
+    return any(marker in normalized for marker in transient_markers)
+
+
+def _retry_delay_seconds(attempt: int) -> float:
+    return min(PROVIDER_RETRY_BASE_SECONDS * (2 ** max(attempt - 1, 0)), PROVIDER_RETRY_MAX_SECONDS)
 
 
 def _job_view_url(job_id: str, token: str = "") -> str:
@@ -351,20 +391,57 @@ def _process_job(job_id: str) -> None:
                 pages_selected=len(selected_pages),
                 pages_processed=index - 1,
             )
-            _throttle_before_provider_call(job_id, page_id)
 
             try:
                 rendered_page = ocr_script._read_single_input_page(source_file, page_number, RENDER_DPI)
-                artifact, _raw_response = ocr_script._run_validated_json_extraction(
-                    input_path=source_file,
-                    provider=PROVIDER,
-                    api_key=api_key,
-                    model=MODEL,
-                    pages=[rendered_page],
-                    page_triage=[page_triage],
-                    language_hints=LANGUAGE_HINTS,
-                    timeout=REQUEST_TIMEOUT,
-                )
+                artifact: dict[str, Any] | None = None
+                max_attempts = MAX_PROVIDER_RETRIES + 1
+                for attempt in range(1, max_attempts + 1):
+                    _throttle_before_provider_call(job_id, page_id)
+                    try:
+                        artifact, _raw_response = ocr_script._run_validated_json_extraction(
+                            input_path=source_file,
+                            provider=PROVIDER,
+                            api_key=api_key,
+                            model=MODEL,
+                            pages=[rendered_page],
+                            page_triage=[page_triage],
+                            language_hints=LANGUAGE_HINTS,
+                            timeout=REQUEST_TIMEOUT,
+                        )
+                        break
+                    except Exception as exc:
+                        error_message = ocr_script._redact_secrets(str(exc))
+                        can_retry = attempt < max_attempts and _is_transient_provider_error(error_message)
+                        if not can_retry:
+                            raise
+                        delay = _retry_delay_seconds(attempt)
+                        _record_provider_event(
+                            job_id=job_id,
+                            page_id=page_id,
+                            source_file=str(source_file),
+                            page_number=page_number,
+                            status="retry_wait",
+                            error=error_message,
+                            attempt=attempt,
+                            max_attempts=max_attempts,
+                        )
+                        _set_job_status(
+                            job_id,
+                            "retrying",
+                            message=(
+                                f"Provider is busy for page {index} of {len(selected_pages)}. "
+                                f"Retry {attempt} of {MAX_PROVIDER_RETRIES} in {round(delay, 1)}s."
+                            ),
+                            current_page_id=page_id,
+                            pages_selected=len(selected_pages),
+                            pages_processed=index - 1,
+                        )
+                        time.sleep(delay)
+
+                if artifact is None:
+                    raise RuntimeError("Provider extraction ended without an artifact.")
+
                 extractions.append(artifact)
                 ocr_script._add_extraction_totals(totals, artifact)
                 ocr_script._add_cost_totals(cost_totals, artifact)
@@ -375,6 +452,8 @@ def _process_job(job_id: str) -> None:
                     page_number=page_number,
                     status="success",
                     usage=artifact.get("usage") if isinstance(artifact.get("usage"), dict) else {},
+                    attempt=attempt,
+                    max_attempts=max_attempts,
                 )
             except Exception as exc:
                 error_message = ocr_script._redact_secrets(str(exc))
@@ -394,6 +473,8 @@ def _process_job(job_id: str) -> None:
                     page_number=page_number,
                     status="failure",
                     error=error_message,
+                    attempt=MAX_PROVIDER_RETRIES + 1,
+                    max_attempts=MAX_PROVIDER_RETRIES + 1,
                 )
 
         packet = ocr_script._build_packet_artifact(
@@ -453,6 +534,7 @@ def index(request: Request) -> str:
       <head><title>arch-ocr demo</title></head>
       <body>
         <h1>arch-ocr demo</h1>
+        <p><a href="/design/arch-ocr.html">Open the connected demo UI</a></p>
         <p>Upload up to {MAX_FILES_PER_PACKET} PDF/image files. The demo processes up to {MAX_PAGES_PER_PACKET} pages total.</p>
         <form action="/jobs" method="post" enctype="multipart/form-data">
           <label>Demo token <input name="token" type="password" /></label>
@@ -472,6 +554,7 @@ async def create_job(
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
     token: str | None = Form(default=None),
+    title: str | None = Form(default=None),
 ) -> JSONResponse:
     _ensure_storage()
     _require_demo_access(request, token)
@@ -505,6 +588,7 @@ async def create_job(
         "job_id": job_id,
         "status": "queued",
         "message": "Job queued.",
+        "title": (title or "").strip() or None,
         "created_at": _now(),
         "updated_at": _now(),
         "files": saved_files,
@@ -515,6 +599,9 @@ async def create_job(
             "provider_min_seconds_between_calls": MIN_SECONDS_BETWEEN_CALLS,
             "provider_max_requests_per_minute": MAX_REQUESTS_PER_MINUTE,
             "provider_max_requests_per_day": MAX_REQUESTS_PER_DAY,
+            "provider_max_retries": MAX_PROVIDER_RETRIES,
+            "provider_retry_base_seconds": PROVIDER_RETRY_BASE_SECONDS,
+            "provider_retry_max_seconds": PROVIDER_RETRY_MAX_SECONDS,
         },
     }
     _save_job(job)
