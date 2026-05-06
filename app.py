@@ -687,8 +687,8 @@ def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "", 
         </header>
         <main>
           <section class="stats">
-            <div class="stat"><div class="muted">{html.escape(labels['pages'])}</div><div class="value">{html.escape(str(totals.get("pages_processed", 0)))} / {html.escape(str(totals.get("pages_total", 0)))}</div></div>
-            <div class="stat"><div class="muted">{html.escape(labels['fields'])}</div><div class="value">{html.escape(str(totals.get("fields_total", 0)))}</div></div>
+            <div class="stat"><div class="muted">{html.escape(labels['pages'])}</div><div class="value">{html.escape(str(totals.get("pages_extracted", 0)))} / {html.escape(str(totals.get("pages_selected", totals.get("pages_triaged", 0))))}</div></div>
+            <div class="stat"><div class="muted">{html.escape(labels['fields'])}</div><div class="value">{html.escape(str(totals.get("field_count", 0)))}</div></div>
             <div class="stat"><div class="muted">{html.escape(labels['checks'])}</div><div class="value">{html.escape(str(check_summary.get("check_count", 0)))}</div><div>{status_counts}</div></div>
             <div class="stat"><div class="muted">{html.escape(labels['cost'])}</div><div class="value">${estimated_cost:.6f}</div></div>
           </section>
