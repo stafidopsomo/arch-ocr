@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 import ocr_script
 
@@ -247,6 +247,52 @@ def _record_provider_event(
     )
 
 
+def _job_view_url(job_id: str, token: str = "") -> str:
+    suffix = f"?token={token}" if token else ""
+    return f"/jobs/{job_id}/view{suffix}"
+
+
+def _job_status_page(job: dict[str, Any], token: str = "") -> str:
+    job_id = html.escape(str(job.get("job_id", "")))
+    status = html.escape(str(job.get("status", "")))
+    message = html.escape(str(job.get("message", "")))
+    pages_processed = html.escape(str(job.get("pages_processed", 0)))
+    pages_selected = html.escape(str(job.get("pages_selected", "?")))
+    token_query = f"?token={html.escape(token)}" if token else ""
+    terminal = str(job.get("status", "")) in {"completed", "completed_with_errors", "failed"}
+    refresh = "" if terminal else '<meta http-equiv="refresh" content="5">'
+    result_links = ""
+    if str(job.get("status", "")) in {"completed", "completed_with_errors"}:
+        result_links = f"""
+          <p>
+            <a href="/jobs/{job_id}/report{token_query}">Open report</a>
+            |
+            <a href="/jobs/{job_id}/packet{token_query}">Open packet JSON</a>
+            |
+            <a href="/admin{token_query}">Admin</a>
+          </p>
+        """
+    elif str(job.get("status", "")) == "failed":
+        result_links = f'<p><a href="/admin{token_query}">Back to admin</a></p>'
+
+    return f"""
+    <html>
+      <head>
+        <title>arch-ocr job {job_id}</title>
+        {refresh}
+      </head>
+      <body>
+        <h1>OCR job</h1>
+        <p><strong>Status:</strong> {status}</p>
+        <p><strong>Message:</strong> {message}</p>
+        <p><strong>Progress:</strong> {pages_processed} / {pages_selected} pages</p>
+        <p><small>Job ID: {job_id}</small></p>
+        {result_links}
+      </body>
+    </html>
+    """
+
+
 def _selected_pages_for_packet(triage_artifact: dict[str, Any]) -> list[tuple[Path, dict[str, Any]]]:
     selected: list[tuple[Path, dict[str, Any]]] = []
     for document in triage_artifact.get("documents", []):
@@ -473,7 +519,17 @@ async def create_job(
     }
     _save_job(job)
     background_tasks.add_task(_process_job, job_id)
+    accept_header = request.headers.get("accept", "")
+    if "text/html" in accept_header:
+        return RedirectResponse(_job_view_url(job_id, token or ""), status_code=303)
     return JSONResponse(job, status_code=202)
+
+
+@app.get("/jobs/{job_id}/view", response_class=HTMLResponse)
+def view_job(job_id: str, request: Request) -> str:
+    token = request.query_params.get("token") or request.query_params.get("admin_token") or ""
+    _require_demo_access(request)
+    return _job_status_page(_load_job(job_id), token)
 
 
 @app.get("/jobs/{job_id}")
