@@ -1211,6 +1211,156 @@ def _summarize_extraction(extraction: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _snippet_around_match(text: str, start: int, end: int, radius: int = 80) -> str:
+    left = max(start - radius, 0)
+    right = min(end + radius, len(text))
+    return re.sub(r"\s+", " ", text[left:right]).strip()
+
+
+def _deterministic_identifier_candidates(text: str) -> list[dict[str, str]]:
+    candidates: list[dict[str, str]] = []
+    patterns = [
+        (
+            "afm",
+            "ΑΦΜ",
+            re.compile(r"(?:Α\.?\s*Φ\.?\s*Μ\.?|AFM)\D{0,24}(\d{9})", re.IGNORECASE),
+        ),
+        (
+            "atak",
+            "ΑΤΑΚ",
+            re.compile(r"(?:Α\.?\s*Τ\.?\s*Α\.?\s*Κ\.?|ATAK)\D{0,24}(\d{8,15})", re.IGNORECASE),
+        ),
+        (
+            "kaek",
+            "ΚΑΕΚ",
+            re.compile(
+                r"(?:ΚΑΕΚ|KAEK)\D{0,80}((?:\d[\s./-]*){12,}(?:/\s*\d+\s*/\s*\d+)?)",
+                re.IGNORECASE,
+            ),
+        ),
+    ]
+    seen: set[tuple[str, str]] = set()
+    for subtype, label, pattern in patterns:
+        for match in pattern.finditer(text):
+            raw_value = match.group(1)
+            if subtype == "afm":
+                value = re.sub(r"\D+", "", raw_value)
+            elif subtype == "atak":
+                value = re.sub(r"\D+", "", raw_value)
+            else:
+                value = re.sub(r"\s+", " ", raw_value).strip(" .,-")
+            if not value:
+                continue
+            key = (subtype, re.sub(r"\D+", "", value) if subtype in {"afm", "atak"} else value)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                {
+                    "identifier_subtype": subtype,
+                    "label_text": label,
+                    "value": value,
+                    "nearby_text": _snippet_around_match(text, match.start(), match.end()),
+                }
+            )
+    return candidates
+
+
+def _read_pdf_page_text(source_file: str, page_number: int) -> str:
+    try:
+        with fitz.open(source_file) as document:
+            if page_number < 1 or page_number > len(document):
+                return ""
+            return document[page_number - 1].get_text("text") or ""
+    except Exception:
+        return ""
+
+
+def _field_has_identifier_subtype(field: dict[str, Any], subtype: str) -> bool:
+    evidence = field.get("evidence", {})
+    if not isinstance(evidence, dict):
+        evidence = {}
+    return _infer_identifier_subtype(
+        field_type=str(field.get("field_type", "")),
+        field=field,
+        evidence=evidence,
+    ) == subtype
+
+
+def _attach_deterministic_text_identifiers(packet: dict[str, Any]) -> None:
+    existing_keys: set[tuple[str, str, int, str]] = set()
+    for field in _iter_packet_fields(packet):
+        source_file = str(field.get("source_file") or "")
+        page_number = int(field.get("page_number") or 0)
+        value_digits = re.sub(r"\D+", "", str(field.get("value") or field.get("normalized_value") or ""))
+        for subtype in ("afm", "atak", "kaek"):
+            if _field_has_identifier_subtype(field, subtype):
+                existing_keys.add((source_file, subtype, page_number, value_digits))
+
+    for artifact in packet.get("page_extractions", []):
+        if not isinstance(artifact, dict):
+            continue
+        extraction = artifact.get("extraction")
+        if not isinstance(extraction, dict):
+            continue
+        for page_result in extraction.get("page_results", []):
+            if not isinstance(page_result, dict):
+                continue
+            source_file = str(page_result.get("source_file") or artifact.get("source_file") or "")
+            page_number = page_result.get("page_number")
+            if not source_file or not isinstance(page_number, int):
+                continue
+            fields = page_result.setdefault("fields", [])
+            if not isinstance(fields, list):
+                page_result["fields"] = []
+                fields = page_result["fields"]
+            text = _read_pdf_page_text(source_file, page_number)
+            if not text:
+                continue
+            for candidate_index, candidate in enumerate(_deterministic_identifier_candidates(text), start=1):
+                subtype = candidate["identifier_subtype"]
+                value = candidate["value"]
+                value_digits = re.sub(r"\D+", "", value)
+                key = (source_file, subtype, page_number, value_digits)
+                if key in existing_keys:
+                    continue
+                existing_keys.add(key)
+                field_id = f"p{page_number}-det-{subtype}-{candidate_index}"
+                page_id = str(page_result.get("page_id") or f"{Path(source_file).stem}:p{page_number}")
+                notes = [
+                    "Deterministically extracted from embedded PDF text layer.",
+                    f"Identifier subtype: {subtype}.",
+                ]
+                fields.append(
+                    {
+                        "field_id": field_id,
+                        "field_ref": f"{page_id}:{field_id}",
+                        "field_type": "property_id",
+                        "label_text": candidate["label_text"],
+                        "value": value,
+                        "normalized_value": value_digits if subtype in {"afm", "atak"} else _normalize_cluster_value("property_id", value),
+                        "is_handwritten": False,
+                        "is_stamped": False,
+                        "is_signature": False,
+                        "confidence": "high",
+                        "evidence": {
+                            "nearby_text": candidate["nearby_text"],
+                            "location_hint": "embedded text layer",
+                            "source_file": source_file,
+                            "page_number": page_number,
+                            "page_id": page_id,
+                            "page_kind": page_result.get("page_kind", "unknown"),
+                        },
+                        "notes": notes,
+                        "source_file": source_file,
+                        "page_number": page_number,
+                        "page_id": page_id,
+                        "page_kind": page_result.get("page_kind", "unknown"),
+                    }
+                )
+            artifact["extraction_summary"] = _summarize_extraction(extraction)
+
+
 def _render_markdown_report(
     *,
     input_path: Path,
@@ -2723,6 +2873,8 @@ def _attach_packet_checks(packet: dict[str, Any]) -> None:
 
 
 def _attach_packet_analysis(packet: dict[str, Any]) -> None:
+    _attach_deterministic_text_identifiers(packet)
+    _recalculate_packet_totals(packet)
     _recalculate_packet_costs(packet)
     _attach_packet_clusters(packet)
     _attach_packet_checks(packet)

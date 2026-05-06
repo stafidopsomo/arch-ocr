@@ -10,11 +10,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 from uuid import uuid4
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import ocr_script
@@ -92,6 +93,19 @@ def _load_job(job_id: str) -> dict[str, Any]:
     if not path.exists():
         raise HTTPException(status_code=404, detail="Job not found.")
     return _read_json(path)
+
+
+def _packet_path(job_id: str) -> Path:
+    return _job_dir(job_id) / "output" / "packet.json"
+
+
+def _load_analyzed_packet(job_id: str) -> dict[str, Any]:
+    packet_path = _packet_path(job_id)
+    if not packet_path.exists():
+        raise HTTPException(status_code=404, detail="Packet result not ready.")
+    packet = _read_json(packet_path)
+    ocr_script._attach_packet_analysis(packet)
+    return packet
 
 
 def _save_job(job: dict[str, Any]) -> None:
@@ -449,20 +463,31 @@ def _list_items(values: Any, limit: int = 8, empty_text: str = "None recorded.")
     return f"<ul>{''.join(items)}</ul>"
 
 
-def _render_check_cards(checks: Any, lang: str = "en") -> str:
+def _render_check_cards(
+    checks: Any,
+    *,
+    packet: dict[str, Any],
+    job_id: str,
+    token: str,
+    lang: str = "en",
+) -> str:
     labels = _review_labels(lang)
     if not isinstance(checks, list) or not checks:
         return f'<p class="muted">{html.escape(labels["no_checks"])}</p>'
     order = {"fail": 0, "warning": 1, "unknown": 2, "pass": 3}
     sorted_checks = sorted(checks, key=lambda c: order.get(str(c.get("status", "unknown")), 99) if isinstance(c, dict) else 99)
     cards = []
+    fields_by_ref = _field_index_by_ref(packet)
     for check in sorted_checks:
         if not isinstance(check, dict):
             continue
         title = html.escape(_translate_check_title(check.get("title") or check.get("check_id") or "Check", lang))
         summary = html.escape(str(check.get("summary") or ""))
         evidence_refs = check.get("evidence_refs") if isinstance(check.get("evidence_refs"), list) else []
-        evidence = " ".join(f'<code>{html.escape(str(ref))}</code>' for ref in evidence_refs[:8])
+        evidence = " ".join(
+            _field_ref_thumbnail_html(job_id, token, str(ref), fields_by_ref.get(str(ref)))
+            for ref in evidence_refs[:8]
+        )
         if len(evidence_refs) > 8:
             evidence += f' <span class="muted">+{len(evidence_refs) - 8} more</span>'
         details = _list_items(check.get("details"), limit=6, empty_text=labels["none"])
@@ -527,15 +552,49 @@ def _render_fuzzy_groups(groups: Any, lang: str = "en") -> str:
     return "".join(cards)
 
 
+def _field_index_by_ref(packet: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for field in ocr_script._iter_packet_fields(packet):
+        ref = field.get("field_ref")
+        if isinstance(ref, str) and ref:
+            indexed[ref] = field
+    return indexed
+
+
+def _safe_job_source_path(job_id: str, source_file: Any) -> Path:
+    uploads_dir = (_job_dir(job_id) / "uploads").resolve()
+    candidate = Path(str(source_file)).resolve()
+    if uploads_dir not in candidate.parents and candidate != uploads_dir:
+        raise HTTPException(status_code=403, detail="Source file is outside this job.")
+    if not candidate.exists():
+        raise HTTPException(status_code=404, detail="Source file not found.")
+    return candidate
+
+
+def _field_ref_thumbnail_html(job_id: str, token: str, ref: str, field: dict[str, Any] | None) -> str:
+    safe_ref = html.escape(ref)
+    if not field:
+        return f"<code>{safe_ref}</code>"
+    page_id = html.escape(str(field.get("page_id") or ""))
+    value = html.escape(str(field.get("value") or ""))
+    thumb_query = urlencode({"token": token, "field_ref": ref})
+    thumb_url = f"/jobs/{html.escape(job_id)}/page-thumbnail?{html.escape(thumb_query)}"
+    return f"""
+    <a class="evidence-card" href="{thumb_url}" target="_blank" title="{safe_ref}">
+      <img src="{thumb_url}" loading="lazy" />
+      <span><code>{safe_ref}</code><small>{page_id} · {value}</small></span>
+    </a>
+    """
+
+
 def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "", lang: str = "el") -> str:
     lang = "el" if lang == "el" else "en"
     labels = _review_labels(lang)
-    query_parts = []
+    token_query_values = {"lang": lang}
     if token:
-        query_parts.append(f"token={html.escape(token)}")
-    query_parts.append(f"lang={lang}")
-    token_query = f"?{'&'.join(query_parts)}" if query_parts else ""
-    token_only_query = f"?token={html.escape(token)}" if token else ""
+        token_query_values["token"] = token
+    token_query = f"?{html.escape(urlencode(token_query_values))}"
+    token_only_query = f"?{html.escape(urlencode({'token': token}))}" if token else ""
     executive = packet.get("executive_summary") if isinstance(packet.get("executive_summary"), dict) else {}
     totals = packet.get("totals") if isinstance(packet.get("totals"), dict) else {}
     check_summary = packet.get("check_summary") if isinstance(packet.get("check_summary"), dict) else {}
@@ -601,6 +660,11 @@ def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "", 
           .badge-unknown {{ color:#626b76; background:#f1f2f3; }}
           .refs {{ display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }}
           .refs code {{ background:var(--paper2); border:1px solid var(--line); border-radius:999px; padding:2px 7px; }}
+          .evidence-card {{ width:132px; display:block; border:1px solid var(--line); border-radius:7px; overflow:hidden; background:var(--paper2); text-decoration:none; color:var(--ink); }}
+          .evidence-card img {{ width:100%; height:92px; object-fit:cover; object-position:top center; display:block; background:#fff; border-bottom:1px solid var(--line); }}
+          .evidence-card span {{ display:block; padding:6px; }}
+          .evidence-card code {{ display:block; border:0; background:transparent; padding:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+          .evidence-card small {{ display:block; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px; }}
           ul {{ margin:8px 0 0; padding-left:20px; }}
           .file-list {{ padding:0; list-style:none; }}
           .file-list li {{ display:flex; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line); padding:8px 0; }}
@@ -616,7 +680,7 @@ def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "", 
           <div class="actions">
             <a class="btn btn-primary" href="/jobs/{html.escape(job_id)}/report{token_only_query}">{html.escape(labels['markdown'])}</a>
             <a class="btn" href="/jobs/{html.escape(job_id)}/packet{token_only_query}">{html.escape(labels['json'])}</a>
-            <a class="btn" href="/jobs/{html.escape(job_id)}/review?token={html.escape(token)}&lang={lang_switch}">{lang_switch_label}</a>
+            <a class="btn" href="/jobs/{html.escape(job_id)}/review?{html.escape(urlencode({'token': token, 'lang': lang_switch}))}">{lang_switch_label}</a>
             <a class="btn" href="/design/arch-ocr.html?screen=job&job={html.escape(job_id)}">{html.escape(labels['back'])}</a>
             <a class="btn" href="/admin{token_only_query}">{html.escape(labels['admin'])}</a>
           </div>
@@ -636,7 +700,7 @@ def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "", 
               </section>
               <section class="section">
                 <h2>{html.escape(labels['validation'])}</h2>
-                {_render_check_cards(packet.get("checks"), lang)}
+                {_render_check_cards(packet.get("checks"), packet=packet, job_id=job_id, token=token, lang=lang)}
               </section>
               <section class="section card">
                 <h2>{html.escape(labels['priorities'])}</h2>
@@ -975,29 +1039,45 @@ def get_job(job_id: str, request: Request) -> dict[str, Any]:
 @app.get("/jobs/{job_id}/packet")
 def get_packet(job_id: str, request: Request) -> dict[str, Any]:
     _require_demo_access(request)
-    packet_path = _job_dir(job_id) / "output" / "packet.json"
-    if not packet_path.exists():
-        raise HTTPException(status_code=404, detail="Packet result not ready.")
-    return _read_json(packet_path)
+    return _load_analyzed_packet(job_id)
 
 
 @app.get("/jobs/{job_id}/report", response_class=PlainTextResponse)
 def get_report(job_id: str, request: Request) -> str:
     _require_demo_access(request)
-    report_path = _job_dir(job_id) / "output" / "packet_report.md"
-    if not report_path.exists():
-        raise HTTPException(status_code=404, detail="Report not ready.")
-    return report_path.read_text(encoding="utf-8")
+    return ocr_script._render_packet_report(_load_analyzed_packet(job_id))
 
 
 @app.get("/jobs/{job_id}/review", response_class=HTMLResponse)
 def get_review(job_id: str, request: Request) -> str:
     token = request.query_params.get("token") or request.query_params.get("admin_token") or ""
+    lang = request.query_params.get("lang") or "el"
     _require_demo_access(request)
-    packet_path = _job_dir(job_id) / "output" / "packet.json"
-    if not packet_path.exists():
-        raise HTTPException(status_code=404, detail="Review not ready.")
-    return _render_packet_review(job_id, _read_json(packet_path), token)
+    return _render_packet_review(job_id, _load_analyzed_packet(job_id), token, lang)
+
+
+@app.get("/jobs/{job_id}/page-thumbnail")
+def get_page_thumbnail(job_id: str, request: Request, field_ref: str) -> Response:
+    _require_demo_access(request)
+    packet = _load_analyzed_packet(job_id)
+    field = _field_index_by_ref(packet).get(field_ref)
+    if not field:
+        raise HTTPException(status_code=404, detail="Field reference not found.")
+    source_file = _safe_job_source_path(job_id, field.get("source_file"))
+    page_number = int(field.get("page_number") or 0)
+    if page_number < 1:
+        raise HTTPException(status_code=404, detail="Field page not found.")
+    try:
+        with ocr_script.fitz.open(source_file) as document:
+            if page_number > len(document):
+                raise HTTPException(status_code=404, detail="Page not found.")
+            page = document[page_number - 1]
+            pixmap = page.get_pixmap(matrix=ocr_script.fitz.Matrix(0.35, 0.35), alpha=False)
+            return Response(content=pixmap.tobytes("jpeg"), media_type="image/jpeg")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=ocr_script._redact_secrets(str(exc))) from exc
 
 
 @app.get("/usage")
