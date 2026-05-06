@@ -18,6 +18,31 @@ The Mac does not run local OCR engines or local LLMs. The active workflow uses
 cloud APIs, with Gemini as the first cheap/free-tier vision LLM path and Google
 Vision as an optional OCR baseline.
 
+## Current Status
+
+The project now has two usable surfaces:
+
+- a local CLI for packet extraction, retry, clustering, validation, and
+  deterministic Markdown reporting.
+- a one-service Railway demo in `app.py` with uploads, background jobs,
+  usage/cost tracking, review HTML, JSON export, markdown report export, and a
+  static prototype UI under `/design/arch-ocr.html`.
+
+The Railway demo is intentionally file-backed on a mounted Volume. It does not
+yet use Postgres, real user accounts, subscriptions, or long-term report
+history. Those are the next product layer once the friend demo proves the
+workflow.
+
+Recent review-page improvements:
+
+- Review pages are available in Greek by default with an English toggle.
+- Stored packets are re-analyzed dynamically when opening JSON/report/review,
+  so older jobs can benefit from improved deterministic checks when their
+  source PDFs still exist on the Volume.
+- Embedded PDF text is scanned deterministically for AFM, KAEK, and ATAK so
+  obvious text-layer identifiers are not missed by the vision model.
+- Validation evidence refs can show source-page thumbnails in the review page.
+
 ## Current CLI
 
 Local page triage, no API calls:
@@ -215,10 +240,19 @@ web: uvicorn app:app --host 0.0.0.0 --port $PORT
 Useful endpoints:
 
 - `GET /` - simple upload form.
+- `GET /design/arch-ocr.html` - static demo UI prototype connected to the demo
+  API.
+- `GET /jobs?token=...` - list stored jobs for the demo UI/admin workflow.
 - `POST /jobs` - upload packet files and start a background job.
 - `GET /jobs/{job_id}` - job status JSON.
-- `GET /jobs/{job_id}/packet` - result packet JSON.
-- `GET /jobs/{job_id}/report` - result markdown report.
+- `GET /jobs/{job_id}/packet` - result packet JSON, rebuilt with current
+  deterministic analysis when source PDFs are still present.
+- `GET /jobs/{job_id}/report` - result markdown report, rebuilt from the
+  current analysis.
+- `GET /jobs/{job_id}/review?token=...&lang=el` - browser review page with
+  Greek labels, validation checks, clusters, and evidence thumbnails.
+- `GET /jobs/{job_id}/page-thumbnail?token=...&field_ref=...` - thumbnail for
+  a specific evidence field source page.
 - `GET /usage` - provider usage ledger summary.
 - `GET /admin?token=...` - simple demo admin page.
 
@@ -235,6 +269,18 @@ Railway setup checklist:
 For the first demo, the app uses file-backed storage on the Volume rather than
 Postgres. Postgres/user accounts/subscriptions can be added once the friend demo
 proves the workflow.
+
+## Current Demo Limitations
+
+- The demo uses a shared admin token, not real authentication. Rotate
+  `OCR_ADMIN_TOKEN` if it appears in screenshots, browser history, or logs.
+- The current page cap is a demo/free-tier guardrail. If a packet has more
+  selected pages than `OCR_MAX_PAGES_PER_PACKET`, the remaining pages are not
+  extracted until the cap is raised or a smaller packet is uploaded.
+- Source PDFs must remain on the Volume for dynamic re-analysis and evidence
+  thumbnails to work on old jobs.
+- The static UI is good enough for presentation/testing, but it is not the final
+  Next.js/accounts/admin product.
 
 ## Full Plan
 

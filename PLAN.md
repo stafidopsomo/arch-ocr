@@ -661,19 +661,21 @@ Success criteria:
 - we know whether hybrid mode is worth its cost on real documents.
 - Google Vision remains optional.
 
-### Milestone 8: Railway API
+### Milestone 8: Railway API - First Pass Done
 
 Goal: upload and process packets in the cloud.
 
 Railway deployment shape:
 
-- FastAPI backend.
-- upload endpoint for packets.
-- background job queue or simple worker.
-- persistent storage for uploaded files/rendered pages.
-- database tables for packets, pages, fields, clusters, checks.
-- provider API keys as Railway environment variables.
-- downloadable JSON result.
+- Done: FastAPI backend in `app.py`.
+- Done: upload endpoint for packets.
+- Done: simple sequential background worker guarded by a process lock.
+- Done: persistent file-backed storage for uploads, jobs, packet JSON, reports,
+  and usage ledger under `OCR_STORAGE_DIR`.
+- Done: provider API keys as Railway environment variables.
+- Done: downloadable JSON and Markdown result.
+- Later: database tables for users, packets, report history, billing, and admin
+  analytics.
 
 First Railway milestone:
 
@@ -685,6 +687,13 @@ First Railway milestone:
 - Done: return job status.
 - Done: expose cost/usage summary.
 - Done: use Railway Volume-friendly file storage under `OCR_STORAGE_DIR`.
+- Done: simple token-gated admin/job list pages.
+- Done: static prototype UI served from `/design/arch-ocr.html`.
+- Done: Greek review page with validation checks, clusters, report/JSON links,
+  and evidence thumbnails.
+- Done: dynamic re-analysis for stored packets when opening packet/report/review
+  so deterministic fixes can improve old jobs while source PDFs still exist.
+- Done: deterministic embedded-text scan for AFM, KAEK, and ATAK identifiers.
 - Later: add Postgres users/admins/accounts/subscriptions.
 
 Temporary demo/free-tier constraints:
@@ -717,25 +726,29 @@ Gemini limit notes:
 - For the Railway demo, our app should be stricter than the real free-tier
   limits so a non-careful user cannot accidentally burn through the quota.
 
-Do not build the final user UI before the packet JSON contract is stable.
+Keep the one-service Railway demo until it has been presented and the workflow
+is accepted. Split into a proper web service + API service + Postgres only when
+real users/accounts/history become necessary.
 
-### Milestone 9: Review UI And Reporting
+### Milestone 9: Review UI And Reporting - In Progress
 
 Goal: make validation easy to inspect.
 
 UI should show:
 
-- uploaded packet.
+- Done: uploaded packet/job status through the static demo UI.
 - upload queue with per-file upload bars; selecting or dragging files starts
   upload/preflight immediately, and "Start validation" only becomes available
   after all files have finished uploading.
-- page thumbnails or page IDs.
-- extracted fields per page.
-- clusters of repeated names/addresses/identifiers.
-- warnings and contradictions.
-- raw OCR/model output for debugging.
-- export JSON.
-- optional markdown/human report.
+- Done: page evidence thumbnails in the server-rendered review page.
+- Later: dedicated page-by-page extracted-field browser.
+- Done: clusters of repeated names/addresses/identifiers in the review page.
+- Done: warnings and contradictions as validation cards with evidence refs.
+- Later: raw OCR/model output view for debugging.
+- Done: export JSON.
+- Done: markdown/human report export.
+- Later: replace the CDN/static prototype with a real frontend when accounts,
+  persisted history, and admin workflows are ready.
 
 Railway cost note for the demo:
 
@@ -749,13 +762,17 @@ Railway cost note for the demo:
 
 ## Immediate Next Task
 
-Start **Milestone 8: Railway API** for a controlled demo.
+Stabilize **Milestone 9: Review UI And Reporting** for the friend demo.
 
 Next implementation focus:
 
-1. Add an API app skeleton, probably FastAPI.
-2. Add packet upload endpoint with the demo/free-tier constraints above.
-3. Add a simple sequential worker/job status flow.
-4. Reuse the existing packet extraction/report functions instead of rewriting
-   the OCR pipeline.
-5. Add local usage ledger and throttle hooks before exposing it to the friend.
+1. Redeploy the current Railway demo and verify an old job review shows correct
+   page/field totals, AFM evidence, and thumbnails.
+2. Run one fresh packet with the current cap/settings and compare the review
+   page against the source PDFs.
+3. Improve the review page only where it directly helps presentation:
+   clearer page coverage, selected-vs-skipped page messaging, and Greek copy.
+4. Keep deep domain-specific rules parked until there are many more real
+   packets to investigate.
+5. After the demo, decide whether the next product layer is real login/history
+   or deeper extraction accuracy.
