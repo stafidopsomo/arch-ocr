@@ -726,6 +726,9 @@ Goal: make validation easy to inspect.
 UI should show:
 
 - uploaded packet.
+- upload queue with per-file upload bars; selecting or dragging files starts
+  upload/preflight immediately, and "Start validation" only becomes available
+  after all files have finished uploading.
 - page thumbnails or page IDs.
 - extracted fields per page.
 - clusters of repeated names/addresses/identifiers.
@@ -733,6 +736,16 @@ UI should show:
 - raw OCR/model output for debugging.
 - export JSON.
 - optional markdown/human report.
+
+Railway cost note for the demo:
+
+- Treat network egress as a metric to watch closely. Uploaded files, generated
+  packet JSON/report downloads, browser polling, CDN-loaded prototype assets,
+  and any external API traffic can all contribute to visible traffic.
+- If Railway egress remains high after repeated tests, prioritize reducing
+  response payloads, serving minified/local UI assets, compressing large JSON
+  responses, and moving any future database calls onto Railway private
+  networking.
 
 ## Immediate Next Task
 

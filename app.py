@@ -305,7 +305,9 @@ def _job_status_page(job: dict[str, Any], token: str = "") -> str:
     if str(job.get("status", "")) in {"completed", "completed_with_errors"}:
         result_links = f"""
           <p>
-            <a href="/jobs/{job_id}/report{token_query}">Open report</a>
+            <a href="/jobs/{job_id}/review{token_query}">Open review</a>
+            |
+            <a href="/jobs/{job_id}/report{token_query}">Markdown report</a>
             |
             <a href="/jobs/{job_id}/packet{token_query}">Open packet JSON</a>
             |
@@ -328,6 +330,232 @@ def _job_status_page(job: dict[str, Any], token: str = "") -> str:
         <p><strong>Progress:</strong> {pages_processed} / {pages_selected} pages</p>
         <p><small>Job ID: {job_id}</small></p>
         {result_links}
+      </body>
+    </html>
+    """
+
+
+def _basename(value: Any) -> str:
+    return Path(str(value or "")).name
+
+
+def _status_badge(status: Any) -> str:
+    safe = html.escape(str(status or "unknown"))
+    cls = re.sub(r"[^a-z0-9_-]+", "-", safe.lower())
+    return f'<span class="badge badge-{cls}">{safe}</span>'
+
+
+def _list_items(values: Any, limit: int = 8) -> str:
+    if not isinstance(values, list) or not values:
+        return '<p class="muted">None recorded.</p>'
+    items = []
+    for value in values[:limit]:
+        items.append(f"<li>{html.escape(str(value))}</li>")
+    if len(values) > limit:
+        items.append(f'<li class="muted">... {len(values) - limit} more</li>')
+    return f"<ul>{''.join(items)}</ul>"
+
+
+def _render_check_cards(checks: Any) -> str:
+    if not isinstance(checks, list) or not checks:
+        return '<p class="muted">No validation checks recorded.</p>'
+    order = {"fail": 0, "warning": 1, "unknown": 2, "pass": 3}
+    sorted_checks = sorted(checks, key=lambda c: order.get(str(c.get("status", "unknown")), 99) if isinstance(c, dict) else 99)
+    cards = []
+    for check in sorted_checks:
+        if not isinstance(check, dict):
+            continue
+        title = html.escape(str(check.get("title") or check.get("check_id") or "Check"))
+        summary = html.escape(str(check.get("summary") or ""))
+        evidence_refs = check.get("evidence_refs") if isinstance(check.get("evidence_refs"), list) else []
+        evidence = " ".join(f'<code>{html.escape(str(ref))}</code>' for ref in evidence_refs[:8])
+        if len(evidence_refs) > 8:
+            evidence += f' <span class="muted">+{len(evidence_refs) - 8} more</span>'
+        details = _list_items(check.get("details"), limit=6)
+        cards.append(
+            f"""
+            <article class="card check-card">
+              <div class="card-head">{_status_badge(check.get("status"))}<h3>{title}</h3></div>
+              <p>{summary}</p>
+              {details}
+              <div class="refs">{evidence}</div>
+            </article>
+            """
+        )
+    return "".join(cards)
+
+
+def _render_cluster_cards(clusters: Any) -> str:
+    if not isinstance(clusters, list) or not clusters:
+        return '<p class="muted">No clusters recorded.</p>'
+    cards = []
+    for cluster in clusters[:24]:
+        if not isinstance(cluster, dict):
+            continue
+        field_type = html.escape(str(cluster.get("field_type") or "field"))
+        subtype = cluster.get("subtype")
+        canonical = html.escape(str(cluster.get("canonical_value") or ""))
+        mentions = cluster.get("mentions") if isinstance(cluster.get("mentions"), list) else []
+        subtitle = f"{field_type}"
+        if subtype:
+            subtitle += f" / {html.escape(str(subtype))}"
+        cards.append(
+            f"""
+            <article class="mini-card">
+              <div class="muted">{subtitle} · {len(mentions)} mentions</div>
+              <div class="mono strong">{canonical}</div>
+            </article>
+            """
+        )
+    if len(clusters) > 24:
+        cards.append(f'<p class="muted">Showing 24 of {len(clusters)} clusters.</p>')
+    return "".join(cards)
+
+
+def _render_fuzzy_groups(groups: Any) -> str:
+    if not isinstance(groups, list) or not groups:
+        return '<p class="muted">No fuzzy near-match groups recorded.</p>'
+    cards = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        values = group.get("canonical_values") if isinstance(group.get("canonical_values"), list) else []
+        cards.append(
+            f"""
+            <article class="mini-card">
+              <div>{_status_badge(group.get("status"))} <span class="muted">{html.escape(str(group.get("field_type") or ""))}</span></div>
+              {_list_items(values, limit=6)}
+            </article>
+            """
+        )
+    return "".join(cards)
+
+
+def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "") -> str:
+    token_query = f"?token={html.escape(token)}" if token else ""
+    executive = packet.get("executive_summary") if isinstance(packet.get("executive_summary"), dict) else {}
+    totals = packet.get("totals") if isinstance(packet.get("totals"), dict) else {}
+    check_summary = packet.get("check_summary") if isinstance(packet.get("check_summary"), dict) else {}
+    checks_by_status = check_summary.get("checks_by_status") if isinstance(check_summary.get("checks_by_status"), dict) else {}
+    cost = packet.get("cost_summary") if isinstance(packet.get("cost_summary"), dict) else {}
+    source_files = packet.get("source_files") if isinstance(packet.get("source_files"), list) else []
+    errors = packet.get("errors") if isinstance(packet.get("errors"), list) else []
+    headline = html.escape(str(executive.get("headline") or "Packet review"))
+    created_at = html.escape(str(packet.get("created_at") or ""))
+    provider = html.escape(str(packet.get("provider_config", {}).get("provider") or packet.get("provider") or ""))
+    model = html.escape(str(packet.get("provider_config", {}).get("model") or packet.get("model") or ""))
+    status_counts = " ".join(
+        f"{_status_badge(status)} <strong>{html.escape(str(count))}</strong>"
+        for status, count in checks_by_status.items()
+    )
+    file_rows = "".join(
+        f"<li><span>{html.escape(_basename(file.get('source_file') if isinstance(file, dict) else file))}</span><span class='muted'>{html.escape(str(file.get('page_count', '?') if isinstance(file, dict) else '?'))} pages</span></li>"
+        for file in source_files
+    )
+    error_cards = "".join(
+        f"<article class='mini-card'><strong>{html.escape(str(error.get('page_id') or error.get('source_file') or 'page'))}</strong><p>{html.escape(str(error.get('error') or error))}</p></article>"
+        for error in errors
+        if isinstance(error, dict)
+    ) or '<p class="muted">No page extraction errors recorded.</p>'
+    findings = _list_items(executive.get("key_findings"), limit=8)
+    priorities = _list_items(executive.get("review_priorities"), limit=8)
+    estimated_cost = float(cost.get("estimated_cost_usd") or 0.0)
+    return f"""
+    <html>
+      <head>
+        <title>arch-ocr review {html.escape(job_id)}</title>
+        <style>
+          :root {{ --bg:#fafaf7; --paper:#fff; --paper2:#f6f4ee; --line:#e7e3d8; --ink:#14181f; --muted:#68707c; --accent:#1a2540; }}
+          * {{ box-sizing:border-box; }}
+          body {{ margin:0; background:var(--bg); color:var(--ink); font-family:Inter, ui-sans-serif, system-ui, sans-serif; line-height:1.5; }}
+          header {{ position:sticky; top:0; z-index:1; background:rgba(250,250,247,.96); border-bottom:1px solid var(--line); padding:22px 36px; }}
+          main {{ padding:28px 36px 48px; }}
+          h1 {{ margin:0 0 8px; font-family:Georgia, serif; font-size:30px; line-height:1.15; }}
+          h2 {{ margin:0 0 14px; font-size:15px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }}
+          h3 {{ margin:0; font-size:16px; }}
+          a {{ color:var(--accent); }}
+          code,.mono {{ font-family:"JetBrains Mono", ui-monospace, monospace; font-size:12px; }}
+          .muted {{ color:var(--muted); }}
+          .strong {{ font-weight:700; color:var(--ink); }}
+          .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }}
+          .btn {{ display:inline-flex; align-items:center; height:34px; padding:0 12px; border:1px solid var(--line); border-radius:6px; background:var(--paper); text-decoration:none; font-weight:600; font-size:13px; }}
+          .btn-primary {{ background:var(--accent); color:white; border-color:var(--accent); }}
+          .grid {{ display:grid; grid-template-columns:1.15fr .85fr; gap:22px; align-items:start; }}
+          .section {{ margin-bottom:22px; }}
+          .card,.mini-card {{ background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:16px; }}
+          .mini-card {{ margin-bottom:8px; }}
+          .check-card {{ margin-bottom:12px; }}
+          .card-head {{ display:flex; gap:10px; align-items:center; margin-bottom:8px; }}
+          .stats {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:18px 0; }}
+          .stat {{ background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:14px; }}
+          .stat .value {{ font-size:22px; font-weight:700; }}
+          .badge {{ display:inline-flex; align-items:center; border-radius:999px; padding:2px 8px; font-size:12px; font-weight:700; border:1px solid var(--line); background:var(--paper2); }}
+          .badge-pass {{ color:#27724f; background:#eef8f2; }}
+          .badge-warning {{ color:#926800; background:#fff7db; }}
+          .badge-fail {{ color:#a43a2d; background:#fff0ed; }}
+          .badge-unknown {{ color:#626b76; background:#f1f2f3; }}
+          .refs {{ display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }}
+          .refs code {{ background:var(--paper2); border:1px solid var(--line); border-radius:999px; padding:2px 7px; }}
+          ul {{ margin:8px 0 0; padding-left:20px; }}
+          .file-list {{ padding:0; list-style:none; }}
+          .file-list li {{ display:flex; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line); padding:8px 0; }}
+          @media (max-width: 900px) {{ .grid,.stats {{ grid-template-columns:1fr; }} header,main {{ padding-left:18px; padding-right:18px; }} }}
+        </style>
+      </head>
+      <body>
+        <header>
+          <div class="muted mono">arch-ocr packet review · {html.escape(job_id)}</div>
+          <h1>{headline}</h1>
+          <div class="muted">{created_at} · {provider} · {model}</div>
+          <div class="actions">
+            <a class="btn btn-primary" href="/jobs/{html.escape(job_id)}/report{token_query}">Markdown report</a>
+            <a class="btn" href="/jobs/{html.escape(job_id)}/packet{token_query}">Packet JSON</a>
+            <a class="btn" href="/design/arch-ocr.html?screen=job&job={html.escape(job_id)}">Back to job</a>
+            <a class="btn" href="/admin{token_query}">Admin</a>
+          </div>
+        </header>
+        <main>
+          <section class="stats">
+            <div class="stat"><div class="muted">Pages</div><div class="value">{html.escape(str(totals.get("pages_processed", 0)))} / {html.escape(str(totals.get("pages_total", 0)))}</div></div>
+            <div class="stat"><div class="muted">Fields</div><div class="value">{html.escape(str(totals.get("fields_total", 0)))}</div></div>
+            <div class="stat"><div class="muted">Checks</div><div class="value">{html.escape(str(check_summary.get("check_count", 0)))}</div><div>{status_counts}</div></div>
+            <div class="stat"><div class="muted">Estimated cost</div><div class="value">${estimated_cost:.6f}</div></div>
+          </section>
+          <div class="grid">
+            <div>
+              <section class="section card">
+                <h2>Executive Summary</h2>
+                {findings}
+              </section>
+              <section class="section">
+                <h2>Validation Checks</h2>
+                {_render_check_cards(packet.get("checks"))}
+              </section>
+              <section class="section card">
+                <h2>Review Priorities</h2>
+                {priorities}
+              </section>
+            </div>
+            <aside>
+              <section class="section card">
+                <h2>Source Files</h2>
+                <ul class="file-list">{file_rows}</ul>
+              </section>
+              <section class="section card">
+                <h2>Fuzzy Review</h2>
+                {_render_fuzzy_groups(packet.get("fuzzy_groups"))}
+              </section>
+              <section class="section card">
+                <h2>Clusters</h2>
+                {_render_cluster_cards(packet.get("clusters"))}
+              </section>
+              <section class="section card">
+                <h2>Errors</h2>
+                {error_cards}
+              </section>
+            </aside>
+          </div>
+        </main>
       </body>
     </html>
     """
@@ -643,6 +871,16 @@ def get_report(job_id: str, request: Request) -> str:
     return report_path.read_text(encoding="utf-8")
 
 
+@app.get("/jobs/{job_id}/review", response_class=HTMLResponse)
+def get_review(job_id: str, request: Request) -> str:
+    token = request.query_params.get("token") or request.query_params.get("admin_token") or ""
+    _require_demo_access(request)
+    packet_path = _job_dir(job_id) / "output" / "packet.json"
+    if not packet_path.exists():
+        raise HTTPException(status_code=404, detail="Review not ready.")
+    return _render_packet_review(job_id, _read_json(packet_path), token)
+
+
 @app.get("/usage")
 def usage(request: Request) -> dict[str, Any]:
     _require_demo_access(request)
@@ -693,6 +931,7 @@ def admin(request: Request) -> str:
         rows.append(
             f"<tr><td>{job_id}</td><td>{status}</td><td>{message}</td>"
             f"<td><a href='/jobs/{job_id}?token={html.escape(token)}'>json</a></td>"
+            f"<td><a href='/jobs/{job_id}/review?token={html.escape(token)}'>review</a></td>"
             f"<td><a href='/jobs/{job_id}/report?token={html.escape(token)}'>report</a></td></tr>"
         )
     return f"""
@@ -702,7 +941,7 @@ def admin(request: Request) -> str:
         <p>Usage events: {usage_summary['event_count']}</p>
         <p>Estimated cost: ${usage_summary['estimated_cost_usd']:.6f}</p>
         <table border="1" cellpadding="6">
-          <tr><th>Job</th><th>Status</th><th>Message</th><th>JSON</th><th>Report</th></tr>
+          <tr><th>Job</th><th>Status</th><th>Message</th><th>JSON</th><th>Review</th><th>Report</th></tr>
           {''.join(rows)}
         </table>
       </body>

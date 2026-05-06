@@ -17,6 +17,45 @@ function statusToStep(s) {
   })[s] ?? 0;
 }
 
+function formatDuration(seconds, lang) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return lang === "el" ? "σχεδόν άμεσα" : "almost done";
+  const rounded = Math.ceil(seconds);
+  const mins = Math.floor(rounded / 60);
+  const secs = rounded % 60;
+  if (mins <= 0) return lang === "el" ? `${secs} δευτ.` : `${secs}s`;
+  if (secs === 0) return lang === "el" ? `${mins} λεπ.` : `${mins}m`;
+  return lang === "el" ? `${mins} λεπ. ${secs} δευτ.` : `${mins}m ${secs}s`;
+}
+
+function estimateJobTiming({ job, pagesSelected, pagesProcessed, status, lang }) {
+  const limits = job?.limits || {};
+  const remainingPages = Math.max(pagesSelected - pagesProcessed, 0);
+  const minBetweenCalls = Number(limits.provider_min_seconds_between_calls ?? 4);
+  const maxRetries = Number(limits.provider_max_retries ?? 2);
+  const retryBase = Number(limits.provider_retry_base_seconds ?? 20);
+  const retryMax = Number(limits.provider_retry_max_seconds ?? 120);
+  const retryWorstCase = Array.from({ length: Math.max(maxRetries, 0) }).reduce((sum, _v, idx) => {
+    return sum + Math.min(retryBase * (2 ** idx), retryMax);
+  }, 0);
+  const perPageProcessingGuess = 8;
+  const triageBuffer = status === "queued" || status === "triaging" ? 10 : 0;
+  const demoSeconds = remainingPages * (minBetweenCalls + perPageProcessingGuess) + triageBuffer;
+  const paidMinBetweenCalls = 0.5;
+  const paidSeconds = remainingPages * (paidMinBetweenCalls + perPageProcessingGuess) + Math.min(triageBuffer, 3);
+  const worstCaseSeconds = demoSeconds + remainingPages * retryWorstCase;
+  return {
+    remainingPages,
+    minBetweenCalls,
+    maxRetries,
+    retryBase,
+    retryMax,
+    retryWorstCase,
+    demoLabel: formatDuration(demoSeconds, lang),
+    paidLabel: formatDuration(paidSeconds, lang),
+    worstCaseLabel: formatDuration(worstCaseSeconds, lang),
+  };
+}
+
 function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, onBack }) {
   const { t, lang } = useT();
   const step = statusToStep(status);
@@ -78,6 +117,8 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
   const msgKey = `job_msg_${status === "rate_limited" ? "throttled" : status === "retrying" ? "throttled" : status === "completed_with_errors" ? "completed" : status === "failed" ? "completed" : status}`;
   const reportUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/report?token=${encodeURIComponent(token || "")}` : "#";
   const packetUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/packet?token=${encodeURIComponent(token || "")}` : "#";
+  const reviewUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/review?token=${encodeURIComponent(token || "")}` : "#";
+  const timing = estimateJobTiming({ job, pagesSelected, pagesProcessed, status, lang });
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", background: "var(--bg)" }}>
@@ -103,9 +144,9 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
               </span>
             </StatusPill>
             {!isActive && status !== "failed" && (
-              <button className="btn btn-primary" onClick={onOpenReview}>
+              <a className="btn btn-primary" href={reviewUrl}>
                 {t("job_open_review")} <I.arrow size={14} />
-              </button>
+              </a>
             )}
           </div>
         }
@@ -207,7 +248,8 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
 
             {!isActive && status !== "failed" && (
               <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
-                <a className="btn btn-primary" href={reportUrl}>{lang === "el" ? "Άνοιγμα report" : "Open report"}</a>
+                <a className="btn btn-primary" href={reviewUrl}>{lang === "el" ? "Άνοιγμα προεπισκόπησης" : "Open review"}</a>
+                <a className="btn" href={reportUrl}>{lang === "el" ? "Markdown report" : "Markdown report"}</a>
                 <a className="btn" href={packetUrl}>JSON</a>
               </div>
             )}
@@ -253,9 +295,20 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
               {lang === "el" ? "Όρια συστήματος" : "System limits"}
             </div>
             <SmallStat label={t("job_global_lock")} value="active" mono />
-            <SmallStat label={t("job_provider_min")} value="4 s" />
-            <SmallStat label={lang === "el" ? "Λεπτό / Ημέρα" : "Per minute / day"} value="10 / 100" />
-            <SmallStat label={t("job_estimated")} value={isActive ? "~ 38 s" : "—"} />
+            <SmallStat label={t("job_provider_min")} value={`${timing.minBetweenCalls} s`} />
+            <SmallStat label={lang === "el" ? "Retries / backoff" : "Retries / backoff"} value={`${timing.maxRetries} · ${timing.retryBase}-${timing.retryMax} s`} />
+            <SmallStat label={lang === "el" ? "Λεπτό / Ημέρα" : "Per minute / day"} value={`${job?.limits?.provider_max_requests_per_minute || 10} / ${job?.limits?.provider_max_requests_per_day || 100}`} />
+            <SmallStat
+              label={lang === "el" ? "Εκτίμηση demo/free tier" : "Demo/free-tier estimate"}
+              value={isActive ? `${timing.demoLabel} (${lang === "el" ? `paid: ${timing.paidLabel}` : `paid: ${timing.paidLabel}`})` : "—"}
+            />
+            {isActive && (
+              <div style={{ borderTop: "1px solid var(--hairline)", paddingTop: 10, marginTop: 4, fontSize: 11.5, color: "var(--ink-4)", lineHeight: 1.45 }}>
+                {lang === "el"
+                  ? `Η εκτίμηση μετρά ${timing.remainingPages} υπόλοιπες σελίδες, free-tier pacing και πιθανό backoff. Αν ο πάροχος ζητήσει όλα τα retries, χειρότερη περίπτωση περίπου ${timing.worstCaseLabel}.`
+                  : `Estimate counts ${timing.remainingPages} remaining pages, free-tier pacing, and possible backoff. If every retry is needed, worst case is about ${timing.worstCaseLabel}.`}
+              </div>
+            )}
           </div>
         </div>
       </div>
