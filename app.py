@@ -48,8 +48,14 @@ STARTER_USERNAME = os.getenv("OCR_STARTER_USERNAME", "stavret")
 STARTER_PASSWORD = os.getenv("OCR_STARTER_PASSWORD") or ADMIN_TOKEN
 SESSION_COOKIE = "arch_ocr_session"
 
+
+def _csv_env(name: str) -> list[str]:
+    return [value.strip() for value in os.getenv(name, "").split(",") if value.strip()]
+
+
 PROVIDER = os.getenv("CLOUD_PROVIDER", ocr_script.DEFAULT_PROVIDER)
 MODEL = os.getenv("GEMINI_MODEL") or ocr_script._default_model_for_provider(PROVIDER)
+MODEL_SEQUENCE = [MODEL, *[model for model in _csv_env("OCR_MODEL_FALLBACKS") if model != MODEL]]
 PREVIEW_DPI = int(os.getenv("OCR_PREVIEW_DPI", "36"))
 RENDER_DPI = int(os.getenv("OCR_RENDER_DPI", "150"))
 REQUEST_TIMEOUT = int(os.getenv("OCR_PROVIDER_TIMEOUT", "180"))
@@ -169,10 +175,14 @@ def _current_user(request: Request) -> dict[str, Any] | None:
 
 
 def _demo_users() -> dict[str, dict[str, str]]:
-    return {
+    users = {
         ADMIN_USERNAME: {"password": ADMIN_PASSWORD, "role": "admin"},
         STARTER_USERNAME: {"password": STARTER_PASSWORD, "role": "user"},
     }
+    if ADMIN_TOKEN:
+        users.setdefault("admin", {"password": ADMIN_TOKEN, "role": "admin"})
+        users.setdefault("stavret", {"password": ADMIN_TOKEN, "role": "user"})
+    return users
 
 
 def _append_job_event(job_id: str, event_type: str, **details: Any) -> None:
@@ -378,9 +388,11 @@ def _record_provider_event(
     error: str | None = None,
     attempt: int | None = None,
     max_attempts: int | None = None,
+    model: str | None = None,
 ) -> None:
     usage = usage or {}
     safe_error = ocr_script._redact_secrets(error) if error else None
+    event_model = model or MODEL
     _append_usage_event(
         {
             "timestamp": _now(),
@@ -389,7 +401,7 @@ def _record_provider_event(
             "source_file": source_file,
             "page_number": page_number,
             "provider": PROVIDER,
-            "model": MODEL,
+            "model": event_model,
             "status": status,
             "input_tokens": usage.get("input_tokens"),
             "output_tokens": usage.get("output_tokens"),
@@ -408,7 +420,7 @@ def _record_provider_event(
         source_file=_basename(source_file),
         page_number=page_number,
         provider=PROVIDER,
-        model=MODEL,
+        model=event_model,
         attempt=attempt,
         max_attempts=max_attempts,
         input_tokens=usage.get("input_tokens"),
@@ -571,6 +583,8 @@ def _usage_summary() -> dict[str, Any]:
             "max_requests_per_day": MAX_REQUESTS_PER_DAY,
             "min_seconds_between_calls": MIN_SECONDS_BETWEEN_CALLS,
             "max_provider_retries": MAX_PROVIDER_RETRIES,
+            "primary_model": MODEL,
+            "model_fallbacks": MODEL_SEQUENCE[1:],
         },
     }
 
@@ -590,6 +604,7 @@ def _usage_page(summary: dict[str, Any]) -> str:
               <td>{html.escape(str(event.get("job_id", "")))}</td>
               <td>{html.escape(str(event.get("page_id", "")))}</td>
               <td>{html.escape(str(event.get("status", "")))}</td>
+              <td class="mono">{html.escape(str(event.get("model") or ""))}</td>
               <td class="mono">{html.escape(str(event.get("attempt") or ""))}/{html.escape(str(event.get("max_attempts") or ""))}</td>
               <td class="mono">{html.escape(str(event.get("total_tokens") or ""))}</td>
               <td class="mono">${float(event.get("estimated_cost_usd") or 0.0):.6f}</td>
@@ -626,10 +641,11 @@ def _usage_page(summary: dict[str, Any]) -> str:
         <section class="card">
           <h2>Limits</h2>
           <p>RPM: {summary['limits']['max_requests_per_minute']} · RPD: {summary['limits']['max_requests_per_day']} · Min seconds between calls: {summary['limits']['min_seconds_between_calls']} · Retries: {summary['limits']['max_provider_retries']}</p>
+          <p>Primary model: <code>{html.escape(str(summary['limits']['primary_model']))}</code> · Fallbacks: <code>{html.escape(', '.join(summary['limits']['model_fallbacks']) or 'none')}</code></p>
         </section>
         <h2>Recent provider events</h2>
         <table>
-          <thead><tr><th>Time</th><th>Job</th><th>Page</th><th>Status</th><th>Attempt</th><th>Tokens</th><th>Cost</th><th>Error</th></tr></thead>
+          <thead><tr><th>Time</th><th>Job</th><th>Page</th><th>Status</th><th>Model</th><th>Attempt</th><th>Tokens</th><th>Cost</th><th>Error</th></tr></thead>
           <tbody>{''.join(rows)}</tbody>
         </table>
       </body>
@@ -1088,7 +1104,14 @@ def _process_job(job_id: str) -> None:
     try:
         job = _load_job(job_id)
         _raise_if_abort_requested(job_id)
-        _append_job_event(job_id, "job_started")
+        _append_job_event(
+            job_id,
+            "job_started",
+            provider=PROVIDER,
+            primary_model=MODEL,
+            model_fallbacks=MODEL_SEQUENCE[1:],
+            model_sequence=MODEL_SEQUENCE,
+        )
         upload_dir = _job_dir(job_id) / "uploads"
         output_dir = _job_dir(job_id) / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1155,19 +1178,21 @@ def _process_job(job_id: str) -> None:
                 page_number=page_number,
             )
 
+            max_attempts = max(MAX_PROVIDER_RETRIES + 1, len(MODEL_SEQUENCE))
+            model_for_attempt = MODEL_SEQUENCE[0]
             try:
                 rendered_page = ocr_script._read_single_input_page(source_file, page_number, RENDER_DPI)
                 artifact: dict[str, Any] | None = None
-                max_attempts = MAX_PROVIDER_RETRIES + 1
                 for attempt in range(1, max_attempts + 1):
                     _raise_if_abort_requested(job_id, page_id)
                     _throttle_before_provider_call(job_id, page_id)
+                    model_for_attempt = MODEL_SEQUENCE[min(attempt - 1, len(MODEL_SEQUENCE) - 1)]
                     try:
                         artifact, _raw_response = ocr_script._run_validated_json_extraction(
                             input_path=source_file,
                             provider=PROVIDER,
                             api_key=api_key,
-                            model=MODEL,
+                            model=model_for_attempt,
                             pages=[rendered_page],
                             page_triage=[page_triage],
                             language_hints=LANGUAGE_HINTS,
@@ -1189,13 +1214,17 @@ def _process_job(job_id: str) -> None:
                             error=error_message,
                             attempt=attempt,
                             max_attempts=max_attempts,
+                            model=model_for_attempt,
                         )
+                        next_model = MODEL_SEQUENCE[min(attempt, len(MODEL_SEQUENCE) - 1)]
+                        model_note = f" Next model: {next_model}." if next_model != model_for_attempt else ""
                         _set_job_status(
                             job_id,
                             "retrying",
                             message=(
                                 f"Provider is busy for page {index} of {len(selected_pages)}. "
-                                f"Retry {attempt} of {MAX_PROVIDER_RETRIES} in {round(delay, 1)}s."
+                                f"Retry {attempt} of {max_attempts - 1} in {round(delay, 1)}s."
+                                f"{model_note}"
                             ),
                             current_page_id=page_id,
                             pages_selected=len(selected_pages),
@@ -1219,6 +1248,7 @@ def _process_job(job_id: str) -> None:
                     usage=artifact.get("usage") if isinstance(artifact.get("usage"), dict) else {},
                     attempt=attempt,
                     max_attempts=max_attempts,
+                    model=model_for_attempt,
                 )
                 _append_job_event(
                     job_id,
@@ -1229,6 +1259,7 @@ def _process_job(job_id: str) -> None:
                     source_file=_basename(source_file),
                     page_number=page_number,
                     attempt=attempt,
+                    model=model_for_attempt,
                 )
             except JobAborted:
                 raise
@@ -1250,8 +1281,9 @@ def _process_job(job_id: str) -> None:
                     page_number=page_number,
                     status="failure",
                     error=error_message,
-                    attempt=MAX_PROVIDER_RETRIES + 1,
-                    max_attempts=MAX_PROVIDER_RETRIES + 1,
+                    attempt=max_attempts,
+                    max_attempts=max_attempts,
+                    model=model_for_attempt,
                 )
                 _append_job_event(
                     job_id,
@@ -1262,6 +1294,7 @@ def _process_job(job_id: str) -> None:
                     source_file=_basename(source_file),
                     page_number=page_number,
                     error=error_message,
+                    model=model_for_attempt,
                 )
 
         _append_job_event(
@@ -1281,6 +1314,8 @@ def _process_job(job_id: str) -> None:
             errors=errors,
             totals=totals,
         )
+        packet.setdefault("provider_config", {})["model_sequence"] = MODEL_SEQUENCE
+        packet.setdefault("provider_config", {})["model_fallbacks"] = MODEL_SEQUENCE[1:]
         packet["cost_summary"] = ocr_script._finalize_cost_totals(cost_totals)
         ocr_script._attach_packet_analysis(packet)
         packet_path = output_dir / "packet.json"
@@ -1350,6 +1385,9 @@ def session(request: Request) -> dict[str, Any]:
             "max_files_per_packet": MAX_FILES_PER_PACKET,
             "max_pages_per_packet": MAX_PAGES_PER_PACKET,
             "max_upload_mb": MAX_UPLOAD_MB,
+            "provider": PROVIDER,
+            "model": MODEL,
+            "model_fallbacks": MODEL_SEQUENCE[1:],
         },
     }
 
@@ -1437,6 +1475,9 @@ async def create_job(
             "provider_max_retries": MAX_PROVIDER_RETRIES,
             "provider_retry_base_seconds": PROVIDER_RETRY_BASE_SECONDS,
             "provider_retry_max_seconds": PROVIDER_RETRY_MAX_SECONDS,
+            "provider": PROVIDER,
+            "model": MODEL,
+            "model_fallbacks": MODEL_SEQUENCE[1:],
         },
     }
     _save_job(job)
@@ -1515,6 +1556,9 @@ async def create_draft_job(
             "provider_max_retries": MAX_PROVIDER_RETRIES,
             "provider_retry_base_seconds": PROVIDER_RETRY_BASE_SECONDS,
             "provider_retry_max_seconds": PROVIDER_RETRY_MAX_SECONDS,
+            "provider": PROVIDER,
+            "model": MODEL,
+            "model_fallbacks": MODEL_SEQUENCE[1:],
         },
     }
     _save_job(job)

@@ -124,7 +124,8 @@ Recommended `.env` start:
 ```env
 CLOUD_PROVIDER=gemini
 GEMINI_API_KEY=your_key_here
-GEMINI_MODEL=gemini-3.1-flash-lite-preview
+GEMINI_MODEL=gemini-2.5-flash-lite
+OCR_MODEL_FALLBACKS=gemini-2.5-flash
 ```
 
 ## Providers
@@ -206,10 +207,15 @@ shape. Keep provider usage conservative while using free or low-tier Gemini:
 - one active processing job at a time
 - sequential provider calls, no parallel Gemini calls
 - local provider usage ledger for token/cost/rate visibility
+- ordered model fallback with `OCR_MODEL_FALLBACKS` for transient provider
+  capacity/rate errors; usage events record the actual model used per page
 
 Gemini rate limits are measured in requests per minute, tokens per minute, and
 requests per day, and they apply per Google project. Active limits should be
 checked in AI Studio and mirrored into app env vars instead of hard-coded.
+Provider "high demand" / 503 responses can still happen below visible limits,
+so the demo should prefer stable model IDs over preview IDs when reliability is
+more important than testing the newest model.
 
 Planned env controls:
 
@@ -219,6 +225,7 @@ OCR_MAX_PAGES_PER_PACKET=20
 OCR_PROVIDER_MIN_SECONDS_BETWEEN_CALLS=4
 OCR_PROVIDER_MAX_REQUESTS_PER_MINUTE=10
 OCR_PROVIDER_MAX_REQUESTS_PER_DAY=100
+OCR_MODEL_FALLBACKS=gemini-2.5-flash
 ```
 
 ## Railway Demo Service
@@ -294,6 +301,9 @@ proves the workflow.
 
 - The demo has cookie login for `admin` and `stavret`, but it is still
   file-backed demo authentication, not final account management.
+- If login behaves differently between a normal tab and a private tab, clear the
+  old `archOcrDemoToken` localStorage value or use the eye button to confirm the
+  password field is not prefilled with a stale token.
 - Backward-compatible token access still exists for older direct links. Rotate
   `OCR_ADMIN_TOKEN` if it appears in screenshots, browser history, or logs.
 - The current page cap is a demo/free-tier guardrail. If a packet has more

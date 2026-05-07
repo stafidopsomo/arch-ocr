@@ -203,6 +203,7 @@ function App() {
             lang={t.lang}
             onLang={(l) => setTweak("lang", l)}
             onSignOut={signOut}
+            user={user}
           >
             {screen === "new" && (
               <UploadScreen

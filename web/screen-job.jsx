@@ -58,6 +58,8 @@ function estimateJobTiming({ job, pagesSelected, pagesProcessed, status, lang })
 
 function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, onBack, onAbort }) {
   const { t, lang } = useT();
+  const [events, setEvents] = useState([]);
+  const [eventsError, setEventsError] = useState("");
   const step = statusToStep(status);
   const isActive = !["completed", "completed_with_errors", "failed", "aborted"].includes(status);
   const isThrottled = status === "throttled" || status === "rate_limited" || status === "retrying";
@@ -120,8 +122,34 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
   const reportUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/report${authQuery}` : "#";
   const packetUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/packet${authQuery}` : "#";
   const reviewUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/review${reviewQuery}` : "#";
-  const logsUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/logs${authQuery}` : "#";
   const timing = estimateJobTiming({ job, pagesSelected, pagesProcessed, status, lang });
+
+  useEffect(() => {
+    if (!jobId) return;
+    let stopped = false;
+    async function loadEvents() {
+      try {
+        const res = await fetch(`/jobs/${encodeURIComponent(jobId)}/events?limit=80`, {
+          headers: { "accept": "application/json", ...(token ? { "x-admin-token": token } : {}) },
+          credentials: "same-origin",
+        });
+        if (!res.ok) throw new Error(`Logs failed (${res.status})`);
+        const data = await res.json();
+        if (!stopped) {
+          setEvents(data.events || []);
+          setEventsError("");
+        }
+      } catch (err) {
+        if (!stopped) setEventsError(err.message || String(err));
+      }
+    }
+    loadEvents();
+    const id = setInterval(loadEvents, isActive ? 4000 : 12000);
+    return () => {
+      stopped = true;
+      clearInterval(id);
+    };
+  }, [jobId, token, isActive]);
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", background: "var(--bg)" }}>
@@ -254,16 +282,16 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
                 <a className="btn btn-primary" href={reviewUrl}>{lang === "el" ? "Άνοιγμα προεπισκόπησης" : "Open review"}</a>
                 <a className="btn" href={reportUrl}>{lang === "el" ? "Markdown report" : "Markdown report"}</a>
                 <a className="btn" href={packetUrl}>JSON</a>
-                <a className="btn" href={logsUrl}>{lang === "el" ? "Logs" : "Logs"}</a>
               </div>
             )}
             {isActive && (
               <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
-                <a className="btn" href={logsUrl}>{lang === "el" ? "Live logs" : "Live logs"}</a>
                 <button className="btn" onClick={onAbort} style={{ color: "var(--fail)" }}>{lang === "el" ? "Abort job" : "Abort job"}</button>
               </div>
             )}
           </div>
+
+          <InlineJobLogs events={events} error={eventsError} lang={lang} isActive={isActive} />
 
           {/* steps */}
           <div className="card" style={{ padding: 20 }}>
@@ -351,6 +379,57 @@ function StepRow({ idx, label, state, meta }) {
         <span className="badge badge-accent" style={{ height: 20, fontSize: 10.5 }}>
           <span className="dot pulse-dot" /> live
         </span>
+      )}
+    </div>
+  );
+}
+
+function InlineJobLogs({ events, error, lang, isActive }) {
+  const latest = [...(events || [])].slice(-18).reverse();
+  return (
+    <div className="card" style={{ padding: 20 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+        <div className="label" style={{ margin: 0 }}>{lang === "el" ? "Live logs" : "Live logs"}</div>
+        <div className="muted" style={{ fontSize: 11 }}>{isActive ? (lang === "el" ? "auto-refresh" : "auto-refresh") : (lang === "el" ? "τελευταία ενημέρωση" : "latest")}</div>
+      </div>
+      {error && (
+        <div style={{ color: "var(--fail)", fontSize: 12, marginBottom: 10 }}>{error}</div>
+      )}
+      {latest.length === 0 ? (
+        <div className="muted" style={{ fontSize: 13 }}>{lang === "el" ? "Δεν υπάρχουν logs ακόμη." : "No logs yet."}</div>
+      ) : (
+        <div style={{
+          maxHeight: 280,
+          overflow: "auto",
+          border: "1px solid var(--hairline)",
+          borderRadius: "var(--r-md)",
+          background: "var(--paper-2)",
+        }}>
+          {latest.map((event, index) => {
+            const eventType = event.event_type || "event";
+            const details = Object.entries(event)
+              .filter(([key]) => !["timestamp", "job_id", "event_type"].includes(key))
+              .filter(([, value]) => value !== null && value !== undefined && value !== "")
+              .slice(0, 5)
+              .map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`)
+              .join(" · ");
+            return (
+              <div key={`${event.timestamp}-${eventType}-${index}`} style={{
+                padding: "9px 11px",
+                borderTop: index === 0 ? 0 : "1px solid var(--hairline)",
+                display: "grid",
+                gridTemplateColumns: "132px 160px minmax(0, 1fr)",
+                gap: 10,
+                alignItems: "start",
+                fontSize: 12,
+              }}>
+                <div className="mono muted">{String(event.timestamp || "").replace("T", " ").replace("+00:00", "")}</div>
+                <div className="mono" style={{ color: "var(--ink-1)", fontWeight: 600 }}>{eventType}</div>
+                <div className="muted" style={{ overflowWrap: "anywhere" }}>{details}</div>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

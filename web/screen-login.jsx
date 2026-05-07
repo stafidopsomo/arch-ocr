@@ -3,9 +3,10 @@
 function LoginScreen({ lang, onLang, onSignIn, initialToken = "" }) {
   const { t } = useT();
   const [u, setU] = useState("stavret");
-  const [p, setP] = useState(initialToken);
+  const [p, setP] = useState("");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   async function submit(e) {
     e.preventDefault();
@@ -54,8 +55,31 @@ function LoginScreen({ lang, onLang, onSignIn, initialToken = "" }) {
               </div>
               <div>
                 <label className="label" htmlFor="p">{t("password")}</label>
-                <input id="p" className="input" type="password" value={p}
-                  onChange={e => { setP(e.target.value); setErr(""); }} />
+                <div style={{ position: "relative" }}>
+                  <input id="p" className="input" type={showPassword ? "text" : "password"} value={p}
+                    onChange={e => { setP(e.target.value); setErr(""); }}
+                    style={{ paddingRight: 44 }} />
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={() => setShowPassword((value) => !value)}
+                    title={showPassword ? "Hide password" : "Show password"}
+                    style={{
+                      position: "absolute",
+                      right: 8,
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      border: 0,
+                      background: "transparent",
+                      color: "var(--ink-4)",
+                      display: "grid",
+                      placeItems: "center",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {showPassword ? <I.eyeOff size={16} /> : <I.eye size={16} />}
+                  </button>
+                </div>
               </div>
 
               {err && (

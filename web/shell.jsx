@@ -3,7 +3,7 @@
 const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
 // ─── Sidebar ──────────────────────────────────────────────────────────
-function Sidebar({ screen, onScreen, lang, onLang, onSignOut }) {
+function Sidebar({ screen, onScreen, lang, onLang, onSignOut, user }) {
   const { t } = useT();
   const items = [
     { k: "dashboard", icon: I.layers, label: t("nav_dashboard") },
@@ -42,10 +42,10 @@ function Sidebar({ screen, onScreen, lang, onLang, onSignOut }) {
               color: "#fff",
               display: "grid", placeItems: "center",
               fontSize: 11, fontWeight: 600,
-            }}>SP</div>
+            }}>{String(user?.username || "U").slice(0, 2).toUpperCase()}</div>
             <div style={{ fontSize: 12, lineHeight: 1.2 }}>
-              <div style={{ fontWeight: 500, color: "var(--ink-1)" }}>Stelios P.</div>
-              <div className="muted" style={{ fontSize: 11 }}>admin</div>
+              <div style={{ fontWeight: 500, color: "var(--ink-1)" }}>{user?.username || "Demo user"}</div>
+              <div className="muted" style={{ fontSize: 11 }}>{user?.role || "demo"}</div>
             </div>
           </div>
           <LangSwitch lang={lang} onChange={onLang} />
@@ -80,11 +80,11 @@ function SideLink({ active, icon: Ic, label, onClick }) {
 }
 
 // ─── App shell ────────────────────────────────────────────────────────
-function AppShell({ children, screen, onScreen, lang, onLang, hideSidebar, onSignOut }) {
+function AppShell({ children, screen, onScreen, lang, onLang, hideSidebar, onSignOut, user }) {
   if (hideSidebar) return <div style={{ minHeight: "100vh" }}>{children}</div>;
   return (
     <div style={{ display: "flex", minHeight: "100vh" }}>
-      <Sidebar screen={screen} onScreen={onScreen} lang={lang} onLang={onLang} onSignOut={onSignOut} />
+      <Sidebar screen={screen} onScreen={onScreen} lang={lang} onLang={onLang} onSignOut={onSignOut} user={user} />
       <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>{children}</main>
     </div>
   );

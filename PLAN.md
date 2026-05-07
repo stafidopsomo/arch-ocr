@@ -108,7 +108,8 @@ Recommended cheap provider:
 ```env
 CLOUD_PROVIDER=gemini
 GEMINI_API_KEY=your_key_here
-GEMINI_MODEL=gemini-3.1-flash-lite-preview
+GEMINI_MODEL=gemini-2.5-flash-lite
+OCR_MODEL_FALLBACKS=gemini-2.5-flash
 ```
 
 One-page markdown test:
@@ -715,6 +716,12 @@ Temporary demo/free-tier constraints:
 - Maximum individual upload size: configurable env var.
 - One active processing job at a time per deployment at first.
 - Sequential Gemini calls; no parallel provider calls in the demo worker.
+- Prefer stable Gemini model IDs for the demo. Preview models can be useful for
+  experiments, but provider-capacity errors can happen even when project RPM/TPM
+  usage looks low.
+- Ordered model fallback is supported with `OCR_MODEL_FALLBACKS`; it is used
+  only after transient provider errors and each provider event records the model
+  that was actually called.
 - Rate limiter controlled by env vars:
   - `OCR_MAX_FILES_PER_PACKET=10`
   - `OCR_MAX_PAGES_PER_PACKET=20`
@@ -737,6 +744,11 @@ Gemini limit notes:
   and can change.
 - For the Railway demo, our app should be stricter than the real free-tier
   limits so a non-careful user cannot accidentally burn through the quota.
+- Gemma-family models can be useful experiments, but they are not the default
+  path for this product demo because the pipeline depends on PDF/image input,
+  structured text output, Greek document understanding, and predictable costing.
+  Keep the demo on Gemini Flash/Flash-Lite unless a focused benchmark proves a
+  Gemma model handles the same pages reliably.
 
 Keep the one-service Railway demo until it has been presented and the workflow
 is accepted. Split into a proper web service + API service + Postgres only when
@@ -761,6 +773,8 @@ UI should show:
 - Done: export JSON.
 - Done: markdown/human report export.
 - Done: dashboard delete action and running-job abort action.
+- Done: inline job logs inside the job screen, refreshed periodically, so the
+  user does not need to open a separate logs page during a live run.
 - Later: replace the CDN/static prototype with a real frontend when accounts,
   persisted history, and admin workflows are ready.
 
