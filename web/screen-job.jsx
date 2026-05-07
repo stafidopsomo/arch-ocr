@@ -11,9 +11,9 @@ const PAGES_SELECTED = 10; // matches packet_001 totals
 
 function statusToStep(s) {
   return ({
-    queued: 0, triaging: 1,
-    processing: 2, throttled: 2, retrying: 2, rate_limited: 2,
-    completed: 3, completed_with_errors: 3, failed: 3,
+    uploaded: 0, queued: 0, triaging: 1,
+    processing: 2, throttled: 2, retrying: 2, rate_limited: 2, abort_requested: 2,
+    completed: 3, completed_with_errors: 3, failed: 3, aborted: 3,
   })[s] ?? 0;
 }
 
@@ -56,10 +56,10 @@ function estimateJobTiming({ job, pagesSelected, pagesProcessed, status, lang })
   };
 }
 
-function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, onBack }) {
+function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, onBack, onAbort }) {
   const { t, lang } = useT();
   const step = statusToStep(status);
-  const isActive = !["completed", "completed_with_errors", "failed"].includes(status);
+  const isActive = !["completed", "completed_with_errors", "failed", "aborted"].includes(status);
   const isThrottled = status === "throttled" || status === "rate_limited" || status === "retrying";
   const files = job?.files?.length
     ? job.files.map((file) => ({ name: file.filename || file.path || "upload", pages: 1 }))
@@ -115,9 +115,12 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
 
   const statusKey = `job_status_${status}`;
   const msgKey = `job_msg_${status === "rate_limited" ? "throttled" : status === "retrying" ? "throttled" : status === "completed_with_errors" ? "completed" : status === "failed" ? "completed" : status}`;
-  const reportUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/report?token=${encodeURIComponent(token || "")}` : "#";
-  const packetUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/packet?token=${encodeURIComponent(token || "")}` : "#";
-  const reviewUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/review?token=${encodeURIComponent(token || "")}&lang=el` : "#";
+  const authQuery = token ? `?token=${encodeURIComponent(token)}` : "";
+  const reviewQuery = token ? `?token=${encodeURIComponent(token)}&lang=el` : "?lang=el";
+  const reportUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/report${authQuery}` : "#";
+  const packetUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/packet${authQuery}` : "#";
+  const reviewUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/review${reviewQuery}` : "#";
+  const logsUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/logs${authQuery}` : "#";
   const timing = estimateJobTiming({ job, pagesSelected, pagesProcessed, status, lang });
 
   return (
@@ -251,6 +254,13 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
                 <a className="btn btn-primary" href={reviewUrl}>{lang === "el" ? "Άνοιγμα προεπισκόπησης" : "Open review"}</a>
                 <a className="btn" href={reportUrl}>{lang === "el" ? "Markdown report" : "Markdown report"}</a>
                 <a className="btn" href={packetUrl}>JSON</a>
+                <a className="btn" href={logsUrl}>{lang === "el" ? "Logs" : "Logs"}</a>
+              </div>
+            )}
+            {isActive && (
+              <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+                <a className="btn" href={logsUrl}>{lang === "el" ? "Live logs" : "Live logs"}</a>
+                <button className="btn" onClick={onAbort} style={{ color: "var(--fail)" }}>{lang === "el" ? "Abort job" : "Abort job"}</button>
               </div>
             )}
           </div>

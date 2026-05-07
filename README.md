@@ -236,16 +236,27 @@ uvicorn app:app --reload
 Railway uses the included `Procfile`:
 
 ```text
-web: uvicorn app:app --host 0.0.0.0 --port $PORT
+web: uvicorn app:app --host 0.0.0.0 --port $PORT --no-access-log
 ```
+
+Access logs are disabled for the demo because tokenized backward-compatible
+links may otherwise appear in Railway logs. Use per-job structured logs instead.
 
 Useful endpoints:
 
-- `GET /` - simple upload form.
+- `GET /` - redirects to the connected login/dashboard UI.
+- `POST /login` / `POST /logout` / `GET /session` - demo cookie login.
 - `GET /design/arch-ocr.html` - static demo UI prototype connected to the demo
   API.
-- `GET /jobs?token=...` - list stored jobs for the demo UI/admin workflow.
+- `GET /jobs` - list stored jobs for the demo UI/admin workflow.
 - `POST /jobs` - upload packet files and start a background job.
+- `POST /jobs/draft` - upload files into a draft job without starting
+  validation yet.
+- `POST /jobs/{job_id}/start` - start validation for a drafted upload.
+- `POST /jobs/{job_id}/abort` - request cooperative job abort before the next
+  provider call.
+- `DELETE /jobs/{job_id}` - delete a job folder, including stored uploads,
+  packet JSON, report, and logs.
 - `GET /jobs/{job_id}` - job status JSON.
 - `GET /jobs/{job_id}/packet` - result packet JSON, rebuilt with current
   deterministic analysis when source PDFs are still present.
@@ -255,8 +266,12 @@ Useful endpoints:
   Greek labels, validation checks, clusters, and evidence thumbnails.
 - `GET /jobs/{job_id}/page-thumbnail?token=...&field_ref=...` - thumbnail for
   a specific evidence field source page.
-- `GET /usage` - provider usage ledger summary.
-- `GET /admin?token=...` - simple demo admin page.
+- `GET /jobs/{job_id}/logs?token=...` - auto-refreshing structured job log
+  page for triage, page processing, retries, throttling, and completion.
+- `GET /jobs/{job_id}/events?token=...` - structured job event JSON.
+- `GET /usage` - usage page in a browser, or JSON when requested as
+  `application/json`.
+- `GET /admin` - simple demo admin page.
 
 Railway setup checklist:
 
@@ -265,6 +280,9 @@ Railway setup checklist:
 - Set `OCR_STORAGE_DIR=/data/arch-ocr`.
 - Set `GEMINI_API_KEY` manually in Railway variables.
 - Set `OCR_ADMIN_TOKEN` to a strong random value.
+- Set `OCR_ADMIN_USERNAME`, `OCR_ADMIN_PASSWORD`, `OCR_STARTER_USERNAME`, and
+  `OCR_STARTER_PASSWORD` for the demo login. If passwords are omitted, the demo
+  falls back to `OCR_ADMIN_TOKEN`.
 - Keep `OCR_DEMO_REQUIRE_TOKEN=true`.
 - Set the demo limit env vars from the guardrails above.
 
@@ -274,7 +292,9 @@ proves the workflow.
 
 ## Current Demo Limitations
 
-- The demo uses a shared admin token, not real authentication. Rotate
+- The demo has cookie login for `admin` and `stavret`, but it is still
+  file-backed demo authentication, not final account management.
+- Backward-compatible token access still exists for older direct links. Rotate
   `OCR_ADMIN_TOKEN` if it appears in screenshots, browser history, or logs.
 - The current page cap is a demo/free-tier guardrail. If a packet has more
   selected pages than `OCR_MAX_PAGES_PER_PACKET`, the remaining pages are not

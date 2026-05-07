@@ -39,11 +39,31 @@ function App() {
   const [screen, setScreen] = useState("login"); // login | new | job
   const [authed, setAuthed] = useState(false);
   const [token, setToken] = useState(() => localStorage.getItem("archOcrDemoToken") || "");
+  const [user, setUser] = useState(null);
   const [jobId, setJobId] = useState(() => localStorage.getItem("archOcrJobId") || "");
   const [job, setJob] = useState(null);
   const [jobError, setJobError] = useState("");
+  const [limits, setLimits] = useState({ max_files_per_packet: 10, max_pages_per_packet: 40, max_upload_mb: 100 });
 
   // sync ?screen= for deep-linking screenshots
+  useEffect(() => {
+    let stopped = false;
+    async function loadSession() {
+      try {
+        const res = await fetch("/session", { headers: { "accept": "application/json" }, credentials: "same-origin" });
+        const data = await res.json();
+        if (!stopped && data.authenticated) {
+          setAuthed(true);
+          setUser(data.user || null);
+          if (data.limits) setLimits(data.limits);
+          if (screen === "login") setScreen(jobId ? "job" : "dashboard");
+        }
+      } catch {}
+    }
+    loadSession();
+    return () => { stopped = true; };
+  }, []);
+
   useEffect(() => {
     const p = new URLSearchParams(location.search);
     const s = p.get("screen");
@@ -66,13 +86,14 @@ function App() {
   }, [token]);
 
   useEffect(() => {
-    if (!jobId || !token) return;
+    if (!jobId || (!token && !authed)) return;
     let stopped = false;
 
     async function loadJob() {
       try {
-        const res = await fetch(`/jobs/${encodeURIComponent(jobId)}?token=${encodeURIComponent(token)}`, {
-          headers: { "accept": "application/json" },
+        const res = await fetch(`/jobs/${encodeURIComponent(jobId)}`, {
+          headers: { "accept": "application/json", ...(token ? { "x-admin-token": token } : {}) },
+          credentials: "same-origin",
         });
         if (!res.ok) throw new Error(`Job status failed (${res.status})`);
         const data = await res.json();
@@ -92,7 +113,7 @@ function App() {
       stopped = true;
       clearInterval(id);
     };
-  }, [jobId, token]);
+  }, [jobId, token, authed]);
 
   function navigate(s, nextJobId = jobId) {
     setScreen(s);
@@ -103,13 +124,24 @@ function App() {
     history.replaceState(null, "", "?" + p.toString());
   }
 
-  function signIn(nextToken) {
-    setToken(nextToken);
+  async function signIn(username, password) {
+    const res = await fetch("/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "accept": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `Login failed (${res.status})`);
+    setUser(data.user || null);
+    setToken("");
+    localStorage.removeItem("archOcrDemoToken");
     setAuthed(true);
-    navigate(jobId ? "job" : "new");
+    navigate(jobId ? "job" : "dashboard");
   }
 
-  function signOut() {
+  async function signOut() {
+    try { await fetch("/logout", { method: "POST", credentials: "same-origin" }); } catch {}
     localStorage.removeItem("archOcrDemoToken");
     setToken("");
     setAuthed(false);
@@ -117,16 +149,24 @@ function App() {
     navigate("login", "");
   }
 
-  async function startJob(files, title) {
+  async function startJob(files, title, existingJob = null) {
+    if (existingJob?.job_id) {
+      localStorage.setItem("archOcrJobId", existingJob.job_id);
+      setJobId(existingJob.job_id);
+      setJob(existingJob);
+      navigate("job", existingJob.job_id);
+      return;
+    }
     const form = new FormData();
     files.forEach((file) => form.append("files", file));
-    form.append("token", token);
+    if (token) form.append("token", token);
     if (title) form.append("title", title);
 
     const res = await fetch("/jobs", {
       method: "POST",
       body: form,
-      headers: { "accept": "application/json" },
+      headers: { "accept": "application/json", ...(token ? { "x-admin-token": token } : {}) },
+      credentials: "same-origin",
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -157,7 +197,7 @@ function App() {
               if (k === "new") navigate("new");
               else if (k === "dashboard") navigate("dashboard", "");
               else if (k === "packets") navigate("packets", "");
-              else if (k === "usage") window.location.href = `/usage?token=${encodeURIComponent(token)}`;
+              else if (k === "usage") window.location.href = `/usage`;
               else navigate(k);
             }}
             lang={t.lang}
@@ -167,12 +207,24 @@ function App() {
             {screen === "new" && (
               <UploadScreen
                 token={token}
+                limits={limits}
                 onStart={startJob}
               />
             )}
             {(screen === "dashboard" || screen === "packets") && (
               <PacketsScreen
                 token={token}
+                onDeleteJob={async (deleteJobId) => {
+                  const res = await fetch(`/jobs/${encodeURIComponent(deleteJobId)}`, {
+                    method: "DELETE",
+                    headers: { "accept": "application/json", ...(token ? { "x-admin-token": token } : {}) },
+                    credentials: "same-origin",
+                  });
+                  if (!res.ok) {
+                    const data = await res.json().catch(() => ({}));
+                    throw new Error(data.detail || `Delete failed (${res.status})`);
+                  }
+                }}
                 mode={screen}
                 onNewPacket={() => navigate("new", "")}
                 onOpenJob={(nextJobId) => {
@@ -188,11 +240,24 @@ function App() {
                 job={job}
                 jobId={jobId}
                 token={token}
+                onAbort={async () => {
+                  if (!jobId) return;
+                  const res = await fetch(`/jobs/${encodeURIComponent(jobId)}/abort`, {
+                    method: "POST",
+                    headers: { "accept": "application/json", ...(token ? { "x-admin-token": token } : {}) },
+                    credentials: "same-origin",
+                  });
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok) throw new Error(data.detail || `Abort failed (${res.status})`);
+                  setJob(data);
+                }}
                 error={jobError}
                 onStatus={(s) => setTweak("jobStatus", s)}
                 onBack={() => navigate("new", "")}
                 onOpenReview={() => {
-                  if (jobId) window.location.href = `/jobs/${encodeURIComponent(jobId)}/packet?token=${encodeURIComponent(token)}`;
+                  if (jobId) window.location.href = token
+                    ? `/jobs/${encodeURIComponent(jobId)}/packet?token=${encodeURIComponent(token)}`
+                    : `/jobs/${encodeURIComponent(jobId)}/packet`;
                 }}
               />
             )}

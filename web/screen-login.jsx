@@ -2,16 +2,22 @@
 
 function LoginScreen({ lang, onLang, onSignIn, initialToken = "" }) {
   const { t } = useT();
-  const [u, setU] = useState("demo");
+  const [u, setU] = useState("stavret");
   const [p, setP] = useState(initialToken);
-  const [err, setErr] = useState(false);
+  const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
 
-  function submit(e) {
+  async function submit(e) {
     e.preventDefault();
-    if (!p) { setErr(true); return; }
+    if (!u || !p) { setErr(t("invalid_creds")); return; }
     setLoading(true);
-    setTimeout(() => { setLoading(false); onSignIn(p); }, 250);
+    try {
+      await onSignIn(u, p);
+    } catch (error) {
+      setErr(error.message || t("invalid_creds"));
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -44,12 +50,12 @@ function LoginScreen({ lang, onLang, onSignIn, initialToken = "" }) {
               <div>
                 <label className="label" htmlFor="u">{t("username")}</label>
                 <input id="u" className="input" autoFocus value={u}
-                  onChange={e => { setU(e.target.value); setErr(false); }} />
+                  onChange={e => { setU(e.target.value); setErr(""); }} />
               </div>
               <div>
                 <label className="label" htmlFor="p">{t("password")}</label>
                 <input id="p" className="input" type="password" value={p}
-                  onChange={e => { setP(e.target.value); setErr(false); }} />
+                  onChange={e => { setP(e.target.value); setErr(""); }} />
               </div>
 
               {err && (
@@ -62,7 +68,7 @@ function LoginScreen({ lang, onLang, onSignIn, initialToken = "" }) {
                   display: "flex", alignItems: "center", gap: 8,
                 }}>
                   <I.alert size={14} />
-                  {t("invalid_creds")}
+                  {err}
                 </div>
               )}
 

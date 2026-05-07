@@ -1,18 +1,20 @@
 /* Dashboard / packets list for the connected demo */
 
-function PacketsScreen({ token, mode = "packets", onOpenJob, onNewPacket }) {
+function PacketsScreen({ token, mode = "packets", onOpenJob, onNewPacket, onDeleteJob }) {
   const { t, lang } = useT();
   const [jobs, setJobs] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [busyJob, setBusyJob] = useState("");
 
   useEffect(() => {
     if (!token) return;
     let stopped = false;
     async function load() {
       try {
-        const res = await fetch(`/jobs?token=${encodeURIComponent(token)}`, {
-          headers: { "accept": "application/json" },
+        const res = await fetch(`/jobs`, {
+          headers: { "accept": "application/json", ...(token ? { "x-admin-token": token } : {}) },
+          credentials: "same-origin",
         });
         if (!res.ok) throw new Error(`Jobs failed (${res.status})`);
         const data = await res.json();
@@ -37,7 +39,7 @@ function PacketsScreen({ token, mode = "packets", onOpenJob, onNewPacket }) {
   }, [token]);
 
   const totalPackets = jobs.length;
-  const activeJobs = jobs.filter((job) => !["completed", "completed_with_errors", "failed"].includes(job.status)).length;
+  const activeJobs = jobs.filter((job) => !["completed", "completed_with_errors", "failed", "aborted"].includes(job.status)).length;
   const pagesProcessed = jobs.reduce((sum, job) => sum + Number(job.pages_processed || job.totals?.pages_extracted || 0), 0);
   const estimatedCost = jobs.reduce((sum, job) => sum + Number(job.cost_summary?.estimated_cost_usd || 0), 0);
   const title = mode === "dashboard"
@@ -92,7 +94,26 @@ function PacketsScreen({ token, mode = "packets", onOpenJob, onNewPacket }) {
           ) : (
             <div style={{ display: "flex", flexDirection: "column" }}>
               {jobs.slice(0, mode === "dashboard" ? 8 : 100).map((job) => (
-                <JobRow key={job.job_id} job={job} token={token} onOpen={() => onOpenJob(job.job_id)} lang={lang} />
+                <JobRow
+                  key={job.job_id}
+                  job={job}
+                  token={token}
+                  onOpen={() => onOpenJob(job.job_id)}
+                  onDelete={async () => {
+                    if (!confirm(lang === "el" ? "Να διαγραφεί αυτό το job και τα αποθηκευμένα reports;" : "Delete this job and stored reports?")) return;
+                    setBusyJob(job.job_id);
+                    try {
+                      await onDeleteJob(job.job_id);
+                      setJobs((current) => current.filter((item) => item.job_id !== job.job_id));
+                    } catch (err) {
+                      setError(err.message || String(err));
+                    } finally {
+                      setBusyJob("");
+                    }
+                  }}
+                  deleting={busyJob === job.job_id}
+                  lang={lang}
+                />
               ))}
             </div>
           )}
@@ -111,19 +132,21 @@ function StatCard({ label, value, mono }) {
   );
 }
 
-function JobRow({ job, token, onOpen, lang }) {
+function JobRow({ job, token, onOpen, onDelete, deleting, lang }) {
   const status = job.status || "queued";
   const title = job.title || job.job_id;
   const pages = job.pages_processed ?? job.totals?.pages_extracted ?? 0;
   const selected = job.pages_selected ?? job.totals?.pages_selected ?? job.limits?.max_pages_per_packet ?? "?";
   const cost = Number(job.cost_summary?.estimated_cost_usd || 0);
-  const terminal = ["completed", "completed_with_errors", "failed"].includes(status);
-  const reviewUrl = `/jobs/${encodeURIComponent(job.job_id)}/review?token=${encodeURIComponent(token)}&lang=el`;
+  const terminal = ["completed", "completed_with_errors", "failed", "aborted"].includes(status);
+  const reviewUrl = token
+    ? `/jobs/${encodeURIComponent(job.job_id)}/review?token=${encodeURIComponent(token)}&lang=el`
+    : `/jobs/${encodeURIComponent(job.job_id)}/review?lang=el`;
 
   return (
     <div style={{
       display: "grid",
-      gridTemplateColumns: "minmax(220px, 1fr) 170px 110px 120px 160px",
+      gridTemplateColumns: "minmax(220px, 1fr) 170px 110px 120px 220px",
       gap: 14,
       alignItems: "center",
       padding: "12px 18px",
@@ -141,6 +164,7 @@ function JobRow({ job, token, onOpen, lang }) {
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <button className="btn btn-sm" onClick={onOpen}>{lang === "el" ? "Job" : "Job"}</button>
         {terminal && status !== "failed" && <a className="btn btn-primary btn-sm" href={reviewUrl}>{lang === "el" ? "Review" : "Review"}</a>}
+        <button className="btn btn-sm" onClick={onDelete} disabled={deleting} style={{ color: "var(--fail)" }}>{deleting ? "..." : (lang === "el" ? "Delete" : "Delete")}</button>
       </div>
     </div>
   );

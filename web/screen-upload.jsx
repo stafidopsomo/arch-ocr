@@ -1,33 +1,91 @@
 /* New packet upload screen */
 
-function UploadScreen({ onStart }) {
+function UploadScreen({ token, limits, onStart }) {
   const { t, lang } = useT();
   const [files, setFiles] = useState([]);
   const [title, setTitle] = useState("");
   const [drag, setDrag] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({});
+  const [draftJob, setDraftJob] = useState(null);
   const inputRef = useRef(null);
 
   const filesCount = files.length;
   const sizeMb = (files.reduce((s, f) => s + f.size, 0) / (1024 * 1024)).toFixed(1);
 
-  const overFiles = filesCount > 10;
-  const overSize = Number(sizeMb) > 100;
-  const canSubmit = filesCount > 0 && !overFiles && !overSize && !submitting;
+  const maxFiles = Number(limits?.max_files_per_packet || 10);
+  const maxPages = Number(limits?.max_pages_per_packet || 40);
+  const maxUploadMb = Number(limits?.max_upload_mb || 100);
+  const overFiles = filesCount > maxFiles;
+  const overSize = Number(sizeMb) > maxUploadMb;
+  const allUploaded = filesCount > 0 && draftJob && !uploading;
+  const canSubmit = allUploaded && !overFiles && !overSize && !submitting;
 
   function addFiles(fileList) {
     const incoming = Array.from(fileList || []);
     if (!incoming.length) return;
     setError("");
-    setFiles((current) => [...current, ...incoming]);
+    const nextFiles = [...files, ...incoming];
+    setFiles(nextFiles);
+    setDraftJob(null);
+    uploadDraft(nextFiles);
   }
-  function remove(i) { setFiles(files.filter((_, idx) => idx !== i)); }
+  function remove(i) {
+    const nextFiles = files.filter((_, idx) => idx !== i);
+    setFiles(nextFiles);
+    setDraftJob(null);
+    setUploadProgress({});
+    if (nextFiles.length) uploadDraft(nextFiles);
+  }
+  function uploadDraft(nextFiles) {
+    setUploading(true);
+    setError("");
+    setUploadProgress(Object.fromEntries(nextFiles.map((file, index) => [index, 0])));
+    const form = new FormData();
+    nextFiles.forEach((file) => form.append("files", file));
+    if (title) form.append("title", title);
+    if (token) form.append("token", token);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/jobs/draft");
+    xhr.setRequestHeader("accept", "application/json");
+    if (token) xhr.setRequestHeader("x-admin-token", token);
+    xhr.withCredentials = true;
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      const pct = Math.max(1, Math.round((event.loaded / event.total) * 100));
+      setUploadProgress(Object.fromEntries(nextFiles.map((file, index) => [index, pct])));
+    };
+    xhr.onload = () => {
+      setUploading(false);
+      const data = JSON.parse(xhr.responseText || "{}");
+      if (xhr.status < 200 || xhr.status >= 300) {
+        setError(data.detail || `Upload failed (${xhr.status})`);
+        return;
+      }
+      setDraftJob(data);
+      setUploadProgress(Object.fromEntries(nextFiles.map((file, index) => [index, 100])));
+    };
+    xhr.onerror = () => {
+      setUploading(false);
+      setError("Upload failed.");
+    };
+    xhr.send(form);
+  }
   async function submit() {
     setError("");
     setSubmitting(true);
     try {
-      await onStart(files, title);
+      const res = await fetch(`/jobs/${encodeURIComponent(draftJob.job_id)}/start`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "accept": "application/json", ...(token ? { "x-admin-token": token } : {}) },
+        credentials: "same-origin",
+        body: JSON.stringify({ title }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || `Start failed (${res.status})`);
+      await onStart([], title, data);
     } catch (err) {
       setError(err.message || String(err));
       setSubmitting(false);
@@ -92,8 +150,8 @@ function UploadScreen({ onStart }) {
 
         {/* counters */}
         <div style={{ display: "flex", gap: 24, marginTop: 18, fontSize: 13 }}>
-          <Counter label={t("upload_files_count", filesCount, 10)} value={filesCount} max={10} over={overFiles} />
-          <Counter label={lang === "el" ? "Έως 20 σελίδες θα επιλεγούν από το backend" : "Backend selects up to 20 pages"} value={Math.min(filesCount, 10)} max={10} over={false} />
+          <Counter label={t("upload_files_count", filesCount, maxFiles)} value={filesCount} max={maxFiles} over={overFiles} />
+          <Counter label={lang === "el" ? `Έως ${maxPages} σελίδες θα επιλεγούν από το backend` : `Backend selects up to ${maxPages} pages`} value={Math.min(filesCount, maxFiles)} max={maxFiles} over={false} />
           <div style={{ marginLeft: "auto", color: "var(--ink-4)", display: "flex", alignItems: "center", gap: 6 }} className="mono">
             {sizeMb} MB
           </div>
@@ -107,7 +165,7 @@ function UploadScreen({ onStart }) {
             borderRadius: "var(--r-md)", fontSize: 13, display: "flex", alignItems: "flex-start", gap: 8,
           }}>
             <I.alert size={14} />
-            <span>{error || (overFiles ? t("upload_limit_files") : "Maximum upload size is 100 MB.")}</span>
+            <span>{error || (overFiles ? (lang === "el" ? `Μέγιστο ${maxFiles} αρχεία ανά φάκελο.` : `Maximum ${maxFiles} files per packet.`) : `Maximum upload size is ${maxUploadMb} MB.`)}</span>
           </div>
         )}
 
@@ -117,7 +175,7 @@ function UploadScreen({ onStart }) {
             <div className="label" style={{ marginBottom: 10 }}>{t("upload_files")}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {files.map((f, i) => (
-                <FileRow key={`${f.name}-${i}`} f={f} onRemove={() => remove(i)} t={t} />
+                <FileRow key={`${f.name}-${i}`} f={f} progress={uploadProgress[i] || 0} onRemove={() => remove(i)} t={t} />
               ))}
             </div>
           </div>
@@ -133,9 +191,9 @@ function UploadScreen({ onStart }) {
         {/* limits explainer */}
         <div className="card" style={{ marginTop: 28, padding: 16, background: "var(--paper-2)", borderColor: "var(--hairline)" }}>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, fontSize: 12 }}>
-            <LimitItem label={lang === "el" ? "Μέγιστα αρχεία" : "Max files"} value="10" />
-            <LimitItem label={lang === "el" ? "Μέγιστες σελίδες" : "Max pages"} value="20" />
-            <LimitItem label={lang === "el" ? "Αρχείο ≤" : "File ≤"} value="100 MB" />
+            <LimitItem label={lang === "el" ? "Μέγιστα αρχεία" : "Max files"} value={String(maxFiles)} />
+            <LimitItem label={lang === "el" ? "Μέγιστες σελίδες" : "Max pages"} value={String(maxPages)} />
+            <LimitItem label={lang === "el" ? "Αρχείο ≤" : "File ≤"} value={`${maxUploadMb} MB`} />
             <LimitItem label={lang === "el" ? "Πάροχος" : "Provider"} value="Gemini 3.1" mono />
           </div>
         </div>
@@ -170,7 +228,7 @@ function Counter({ label, value, max, over }) {
   );
 }
 
-function FileRow({ f, onRemove, t }) {
+function FileRow({ f, progress, onRemove, t }) {
   const ext = f.name.toLowerCase().endsWith(".pdf") ? "PDF" : "IMG";
   const sizeMb = (f.size / (1024 * 1024)).toFixed(1);
   return (
@@ -193,7 +251,10 @@ function FileRow({ f, onRemove, t }) {
           {f.name}
         </div>
         <div className="muted" style={{ fontSize: 11.5, marginTop: 1 }}>
-          {sizeMb} MB
+          {sizeMb} MB · {Math.round(progress || 0)}%
+        </div>
+        <div style={{ height: 4, background: "var(--paper-2)", borderRadius: 999, overflow: "hidden", marginTop: 6 }}>
+          <div style={{ width: `${Math.round(progress || 0)}%`, height: "100%", background: progress >= 100 ? "var(--pass)" : "var(--accent)", transition: "width 160ms" }} />
         </div>
       </div>
 

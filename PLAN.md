@@ -687,12 +687,22 @@ First Railway milestone:
 - Done: return job status.
 - Done: expose cost/usage summary.
 - Done: use Railway Volume-friendly file storage under `OCR_STORAGE_DIR`.
+- Done: demo cookie login for `admin` and `stavret` users, configured by env
+  vars.
 - Done: simple token-gated admin/job list pages.
+- Done: browser usage page backed by the provider usage ledger.
+- Done: draft upload flow where file selection uploads first, then validation
+  starts explicitly.
+- Done: cooperative abort endpoint for running jobs.
+- Done: dashboard deletion for stored jobs, including uploads, packet JSON,
+  reports, and logs.
 - Done: static prototype UI served from `/design/arch-ocr.html`.
 - Done: Greek review page with validation checks, clusters, report/JSON links,
   and evidence thumbnails.
 - Done: page coverage messaging for triaged, selected, extracted, and skipped
   pages so demo caps are visible.
+- Done: per-job structured logs for upload, triage, page processing, provider
+  retries, throttling, failures, and completion.
 - Done: dynamic re-analysis for stored packets when opening packet/report/review
   so deterministic fixes can improve old jobs while source PDFs still exist.
 - Done: deterministic embedded-text scan for AFM, KAEK, and ATAK identifiers.
@@ -739,7 +749,7 @@ Goal: make validation easy to inspect.
 UI should show:
 
 - Done: uploaded packet/job status through the static demo UI.
-- upload queue with per-file upload bars; selecting or dragging files starts
+- Done: upload queue with per-file upload bars; selecting or dragging files starts
   upload/preflight immediately, and "Start validation" only becomes available
   after all files have finished uploading.
 - Done: page evidence thumbnails in the server-rendered review page.
@@ -750,6 +760,7 @@ UI should show:
 - Later: raw OCR/model output view for debugging.
 - Done: export JSON.
 - Done: markdown/human report export.
+- Done: dashboard delete action and running-job abort action.
 - Later: replace the CDN/static prototype with a real frontend when accounts,
   persisted history, and admin workflows are ready.
 
