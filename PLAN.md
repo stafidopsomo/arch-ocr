@@ -722,6 +722,10 @@ Temporary demo/free-tier constraints:
 - Ordered model fallback is supported with `OCR_MODEL_FALLBACKS`; it is used
   only after transient provider errors and each provider event records the model
   that was actually called.
+- Admin-only model benchmarking is supported separately from production
+  fallback. It compares selected Gemini/Gemma models on one or two pages, calls
+  each model directly, and stores validity/latency/token/error results under
+  the source job.
 - Rate limiter controlled by env vars:
   - `OCR_MAX_FILES_PER_PACKET=10`
   - `OCR_MAX_PAGES_PER_PACKET=20`
@@ -749,6 +753,8 @@ Gemini limit notes:
   structured text output, Greek document understanding, and predictable costing.
   Keep the demo on Gemini Flash/Flash-Lite unless a focused benchmark proves a
   Gemma model handles the same pages reliably.
+- Live API models are currently out of scope for packet OCR because this app is
+  a batch `generateContent` workflow, not a real-time voice/video session.
 
 Keep the one-service Railway demo until it has been presented and the workflow
 is accepted. Split into a proper web service + API service + Postgres only when

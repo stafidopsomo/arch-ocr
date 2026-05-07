@@ -56,6 +56,18 @@ def _csv_env(name: str) -> list[str]:
 PROVIDER = os.getenv("CLOUD_PROVIDER", ocr_script.DEFAULT_PROVIDER)
 MODEL = os.getenv("GEMINI_MODEL") or ocr_script._default_model_for_provider(PROVIDER)
 MODEL_SEQUENCE = [MODEL, *[model for model in _csv_env("OCR_MODEL_FALLBACKS") if model != MODEL]]
+DEFAULT_BENCHMARK_MODELS = [
+    MODEL,
+    "gemini-3-flash-preview",
+    "gemma-3-4b-it",
+    "gemma-3-12b-it",
+    "gemma-3-27b-it",
+    "gemma-4-26b-a4b-it",
+    "gemma-4-31b-it",
+]
+BENCHMARK_MODELS = list(dict.fromkeys(_csv_env("OCR_BENCHMARK_MODELS") or DEFAULT_BENCHMARK_MODELS))
+MAX_BENCHMARK_MODELS = int(os.getenv("OCR_BENCHMARK_MAX_MODELS", "7"))
+MAX_BENCHMARK_PAGES = int(os.getenv("OCR_BENCHMARK_MAX_PAGES", "2"))
 PREVIEW_DPI = int(os.getenv("OCR_PREVIEW_DPI", "36"))
 RENDER_DPI = int(os.getenv("OCR_RENDER_DPI", "150"))
 REQUEST_TIMEOUT = int(os.getenv("OCR_PROVIDER_TIMEOUT", "180"))
@@ -95,6 +107,14 @@ def _job_path(job_id: str) -> Path:
 
 def _job_events_path(job_id: str) -> Path:
     return _job_dir(job_id) / "events.jsonl"
+
+
+def _benchmark_dir(job_id: str) -> Path:
+    return _job_dir(job_id) / "benchmarks"
+
+
+def _benchmark_path(job_id: str, benchmark_id: str) -> Path:
+    return _benchmark_dir(job_id) / f"{benchmark_id}.json"
 
 
 def _safe_filename(name: str) -> str:
@@ -256,6 +276,16 @@ def _require_demo_access(request: Request, form_token: str | None = None) -> Non
         raise HTTPException(status_code=401, detail="Invalid or missing demo token.")
 
 
+def _require_admin_access(request: Request) -> None:
+    _require_demo_access(request)
+    user = _current_user(request)
+    if user and user.get("role") == "admin":
+        return
+    if ADMIN_TOKEN and _token_from_request(request) == ADMIN_TOKEN:
+        return
+    raise HTTPException(status_code=403, detail="Admin access required.")
+
+
 def _usage_events() -> list[dict[str, Any]]:
     if not USAGE_LEDGER_PATH.exists():
         return []
@@ -287,7 +317,7 @@ def _seconds_since(timestamp: str) -> float | None:
     return (datetime.now(timezone.utc) - event_time).total_seconds()
 
 
-def _throttle_before_provider_call(job_id: str, page_id: str) -> None:
+def _throttle_before_provider_call(job_id: str, page_id: str, *, update_job_status: bool = True) -> None:
     while True:
         _raise_if_abort_requested(job_id, page_id)
         events = _usage_events()
@@ -331,12 +361,13 @@ def _throttle_before_provider_call(job_id: str, page_id: str) -> None:
                 day_count=day_count,
                 max_requests_per_day=MAX_REQUESTS_PER_DAY,
             )
-            _set_job_status(
-                job_id,
-                "rate_limited",
-                message="Daily provider request limit reached. Try again later.",
-                current_page_id=page_id,
-            )
+            if update_job_status:
+                _set_job_status(
+                    job_id,
+                    "rate_limited",
+                    message="Daily provider request limit reached. Try again later.",
+                    current_page_id=page_id,
+                )
             time.sleep(60)
             continue
 
@@ -349,12 +380,13 @@ def _throttle_before_provider_call(job_id: str, page_id: str) -> None:
                 minute_count=minute_count,
                 max_requests_per_minute=MAX_REQUESTS_PER_MINUTE,
             )
-            _set_job_status(
-                job_id,
-                "rate_limited",
-                message="Provider request rate limit reached. Waiting before continuing.",
-                current_page_id=page_id,
-            )
+            if update_job_status:
+                _set_job_status(
+                    job_id,
+                    "rate_limited",
+                    message="Provider request rate limit reached. Waiting before continuing.",
+                    current_page_id=page_id,
+                )
             time.sleep(10)
             continue
 
@@ -366,12 +398,13 @@ def _throttle_before_provider_call(job_id: str, page_id: str) -> None:
                 wait_seconds=round(last_wait, 2),
                 min_seconds_between_calls=MIN_SECONDS_BETWEEN_CALLS,
             )
-            _set_job_status(
-                job_id,
-                "throttled",
-                message=f"Waiting {round(last_wait, 1)}s before next provider call.",
-                current_page_id=page_id,
-            )
+            if update_job_status:
+                _set_job_status(
+                    job_id,
+                    "throttled",
+                    message=f"Waiting {round(last_wait, 1)}s before next provider call.",
+                    current_page_id=page_id,
+                )
             time.sleep(last_wait)
             _raise_if_abort_requested(job_id, page_id)
         return
@@ -647,6 +680,171 @@ def _usage_page(summary: dict[str, Any]) -> str:
         <table>
           <thead><tr><th>Time</th><th>Job</th><th>Page</th><th>Status</th><th>Model</th><th>Attempt</th><th>Tokens</th><th>Cost</th><th>Error</th></tr></thead>
           <tbody>{''.join(rows)}</tbody>
+        </table>
+      </body>
+    </html>
+    """
+
+
+def _model_catalog() -> dict[str, Any]:
+    return {
+        "provider": PROVIDER,
+        "primary_model": MODEL,
+        "fallback_models": MODEL_SEQUENCE[1:],
+        "benchmark_models": BENCHMARK_MODELS,
+        "limits": {
+            "max_benchmark_models": MAX_BENCHMARK_MODELS,
+            "max_benchmark_pages": MAX_BENCHMARK_PAGES,
+            "min_seconds_between_calls": MIN_SECONDS_BETWEEN_CALLS,
+        },
+        "notes": [
+            "Normal jobs continue to use GEMINI_MODEL and OCR_MODEL_FALLBACKS.",
+            "Benchmarks call each selected model directly once per selected page.",
+            "Live API models are not included because this batch OCR flow uses standard generateContent calls.",
+        ],
+    }
+
+
+def _benchmarks_page(job_id: str, benchmarks: list[dict[str, Any]], token: str = "") -> str:
+    token_query = f"?{html.escape(urlencode({'token': token}))}" if token else ""
+    model_checks = "".join(
+        f"""
+        <label>
+          <input type="checkbox" name="models" value="{html.escape(model)}" checked>
+          <code>{html.escape(model)}</code>
+        </label>
+        """
+        for model in BENCHMARK_MODELS
+    )
+    rows = []
+    for benchmark in benchmarks:
+        benchmark_id = html.escape(str(benchmark.get("benchmark_id") or ""))
+        status = html.escape(str(benchmark.get("status") or "unknown"))
+        completed = html.escape(str(benchmark.get("completed_calls") or 0))
+        total = html.escape(str(benchmark.get("total_calls") or 0))
+        models = html.escape(", ".join(str(model) for model in benchmark.get("models", [])))
+        rows.append(
+            f"""
+            <tr>
+              <td class="mono">{benchmark_id}</td>
+              <td>{status}</td>
+              <td class="mono">{completed} / {total}</td>
+              <td>{models}</td>
+              <td><a href="/jobs/{html.escape(job_id)}/benchmarks/{benchmark_id}{token_query}">open</a></td>
+            </tr>
+            """
+        )
+    return f"""
+    <html>
+      <head>
+        <title>arch-ocr model benchmarks</title>
+        <style>
+          body {{ font-family: ui-sans-serif, system-ui, sans-serif; margin:24px; background:#fafaf7; color:#14181f; }}
+          a {{ color:#1a2540; }}
+          .card {{ background:white; border:1px solid #e7e3d8; border-radius:8px; padding:16px; margin-bottom:18px; }}
+          label {{ display:block; margin:8px 0; }}
+          table {{ border-collapse:collapse; width:100%; background:white; }}
+          th,td {{ border:1px solid #e7e3d8; padding:8px; text-align:left; vertical-align:top; }}
+          th {{ background:#f6f4ee; }}
+          button {{ height:34px; padding:0 12px; border:1px solid #1a2540; border-radius:6px; background:#1a2540; color:white; font-weight:700; }}
+          input[type=number] {{ width:70px; }}
+          .mono, code {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }}
+          .muted {{ color:#68707c; }}
+        </style>
+      </head>
+      <body>
+        <h1>Model Benchmarks</h1>
+        <p><a href="/design/arch-ocr.html?screen=job&job={html.escape(job_id)}">Back to job</a> · <a href="/models{token_query}">model catalog JSON</a></p>
+        <section class="card">
+          <h2>Start benchmark</h2>
+          <p class="muted">Default is one page. Each checked model costs one provider call per page.</p>
+          <form id="benchmark-form">
+            <p>
+              <label>Max pages
+                <input type="number" name="max_pages" value="1" min="1" max="{MAX_BENCHMARK_PAGES}">
+              </label>
+            </p>
+            {model_checks}
+            <button type="submit">Start benchmark</button>
+          </form>
+        </section>
+        <section class="card">
+          <h2>Runs</h2>
+          <table>
+            <thead><tr><th>Benchmark</th><th>Status</th><th>Progress</th><th>Models</th><th>Result</th></tr></thead>
+            <tbody>{''.join(rows) or "<tr><td colspan='5'>No benchmarks yet.</td></tr>"}</tbody>
+          </table>
+        </section>
+        <script>
+          const form = document.getElementById("benchmark-form");
+          form.addEventListener("submit", async (event) => {{
+            event.preventDefault();
+            const data = new FormData(form);
+            const models = data.getAll("models");
+            const maxPages = Number(data.get("max_pages") || 1);
+            const res = await fetch("/jobs/{job_id}/benchmarks{token_query}", {{
+              method: "POST",
+              headers: {{ "content-type": "application/json", "accept": "application/json" }},
+              credentials: "same-origin",
+              body: JSON.stringify({{ models, max_pages: maxPages }})
+            }});
+            const body = await res.json().catch(() => ({{}}));
+            if (!res.ok) {{
+              alert(body.detail || `Benchmark failed (${{res.status}})`);
+              return;
+            }}
+            location.href = `/jobs/{job_id}/benchmarks/${{body.benchmark_id}}{token_query}`;
+          }});
+        </script>
+      </body>
+    </html>
+    """
+
+
+def _benchmark_result_page(job_id: str, benchmark: dict[str, Any], token: str = "") -> str:
+    token_query = f"?{html.escape(urlencode({'token': token}))}" if token else ""
+    rows = []
+    for result in benchmark.get("results", []):
+        if not isinstance(result, dict):
+            continue
+        error = str(result.get("error") or "")
+        if len(error) > 260:
+            error = error[:260] + "..."
+        usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
+        rows.append(
+            f"""
+            <tr>
+              <td class="mono">{html.escape(str(result.get("model") or ""))}</td>
+              <td>{html.escape(str(result.get("page_id") or ""))}</td>
+              <td>{html.escape(str(result.get("status") or ""))}</td>
+              <td class="mono">{html.escape(str(result.get("duration_seconds") or ""))}</td>
+              <td class="mono">{html.escape(str(result.get("field_count") or ""))}</td>
+              <td class="mono">{html.escape(str(usage.get("total_tokens") or ""))}</td>
+              <td>{html.escape(error)}</td>
+            </tr>
+            """
+        )
+    return f"""
+    <html>
+      <head>
+        <title>arch-ocr benchmark {html.escape(str(benchmark.get("benchmark_id") or ""))}</title>
+        <meta http-equiv="refresh" content="8">
+        <style>
+          body {{ font-family: ui-sans-serif, system-ui, sans-serif; margin:24px; background:#fafaf7; color:#14181f; }}
+          a {{ color:#1a2540; }}
+          table {{ border-collapse:collapse; width:100%; background:white; }}
+          th,td {{ border:1px solid #e7e3d8; padding:8px; text-align:left; vertical-align:top; }}
+          th {{ background:#f6f4ee; }}
+          .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }}
+        </style>
+      </head>
+      <body>
+        <h1>Benchmark {html.escape(str(benchmark.get("benchmark_id") or ""))}</h1>
+        <p><a href="/jobs/{html.escape(job_id)}/benchmarks{token_query}">Back to benchmarks</a> · <a href="/jobs/{html.escape(job_id)}/benchmarks/{html.escape(str(benchmark.get("benchmark_id") or ""))}.json{token_query}">JSON</a></p>
+        <p><strong>Status:</strong> {html.escape(str(benchmark.get("status") or ""))} · <strong>Progress:</strong> {html.escape(str(benchmark.get("completed_calls") or 0))} / {html.escape(str(benchmark.get("total_calls") or 0))}</p>
+        <table>
+          <thead><tr><th>Model</th><th>Page</th><th>Status</th><th>Seconds</th><th>Fields</th><th>Tokens</th><th>Error</th></tr></thead>
+          <tbody>{''.join(rows) or "<tr><td colspan='7'>No results yet.</td></tr>"}</tbody>
         </table>
       </body>
     </html>
@@ -1093,6 +1291,253 @@ def _selected_pages_for_packet(triage_artifact: dict[str, Any]) -> list[tuple[Pa
     return selected
 
 
+def _safe_benchmark_models(models: Any) -> list[str]:
+    requested = models if isinstance(models, list) else []
+    safe: list[str] = []
+    allowed = set(BENCHMARK_MODELS)
+    for model in requested:
+        model_name = str(model or "").strip()
+        if model_name in allowed and model_name not in safe:
+            safe.append(model_name)
+    if not safe:
+        safe = BENCHMARK_MODELS[:]
+    return safe[:MAX_BENCHMARK_MODELS]
+
+
+def _benchmark_pages_for_job(
+    job: dict[str, Any],
+    *,
+    requested_page_ids: Any = None,
+    max_pages: int | None = None,
+) -> tuple[dict[str, Any], list[tuple[Path, dict[str, Any]]]]:
+    upload_dir = _job_dir(str(job["job_id"])) / "uploads"
+    input_files = [
+        Path(file_info["path"])
+        for file_info in job.get("files", [])
+        if isinstance(file_info, dict)
+    ]
+    triage_artifact = ocr_script._build_triage_artifact(
+        input_path=upload_dir,
+        files=input_files,
+        max_pages_per_file=None,
+        preview_dpi=PREVIEW_DPI,
+    )
+    selected = _selected_pages_for_packet(triage_artifact)
+    requested_ids = {str(value) for value in requested_page_ids} if isinstance(requested_page_ids, list) else set()
+    if requested_ids:
+        selected = [
+            (source_file, page)
+            for source_file, page in selected
+            if str(page.get("page_id") or "") in requested_ids
+        ]
+    safe_max = max(1, min(int(max_pages or 1), MAX_BENCHMARK_PAGES))
+    return triage_artifact, selected[:safe_max]
+
+
+def _count_artifact_fields(artifact: dict[str, Any]) -> int:
+    total = 0
+    extraction = artifact.get("extraction")
+    if not isinstance(extraction, dict):
+        return 0
+    for page_result in extraction.get("page_results", []):
+        if isinstance(page_result, dict) and isinstance(page_result.get("fields"), list):
+            total += len(page_result["fields"])
+    return total
+
+
+def _first_page_result(artifact: dict[str, Any]) -> dict[str, Any]:
+    extraction = artifact.get("extraction")
+    if not isinstance(extraction, dict):
+        return {}
+    page_results = extraction.get("page_results")
+    if not isinstance(page_results, list) or not page_results:
+        return {}
+    first = page_results[0]
+    return first if isinstance(first, dict) else {}
+
+
+def _write_benchmark(job_id: str, benchmark: dict[str, Any]) -> None:
+    _write_json(_benchmark_path(job_id, str(benchmark["benchmark_id"])), benchmark)
+
+
+def _load_benchmark(job_id: str, benchmark_id: str) -> dict[str, Any]:
+    path = _benchmark_path(job_id, benchmark_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Benchmark not found.")
+    return _read_json(path)
+
+
+def _list_benchmarks(job_id: str) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for path in sorted(_benchmark_dir(job_id).glob("*.json"), reverse=True):
+        try:
+            items.append(_read_json(path))
+        except Exception:
+            continue
+    return items
+
+
+def _process_model_benchmark(job_id: str, benchmark_id: str) -> None:
+    benchmark = _load_benchmark(job_id, benchmark_id)
+    if not worker_lock.acquire(blocking=False):
+        benchmark["status"] = "queued"
+        benchmark["message"] = "Waiting for the active OCR job or benchmark to finish."
+        benchmark["updated_at"] = _now()
+        _write_benchmark(job_id, benchmark)
+        _append_job_event(job_id, "benchmark_queued", benchmark_id=benchmark_id)
+        with worker_lock:
+            pass
+        worker_lock.acquire()
+
+    try:
+        benchmark = _load_benchmark(job_id, benchmark_id)
+        job = _load_job(job_id)
+        api_key = ocr_script._require_api_key(PROVIDER, None)
+        benchmark["status"] = "running"
+        benchmark["message"] = "Running model benchmark."
+        benchmark["started_at"] = _now()
+        benchmark["updated_at"] = _now()
+        _write_benchmark(job_id, benchmark)
+        _append_job_event(
+            job_id,
+            "benchmark_started",
+            benchmark_id=benchmark_id,
+            models=benchmark.get("models"),
+            page_ids=benchmark.get("page_ids"),
+        )
+        _triage, pages = _benchmark_pages_for_job(
+            job,
+            requested_page_ids=benchmark.get("page_ids"),
+            max_pages=int(benchmark.get("max_pages") or 1),
+        )
+        results: list[dict[str, Any]] = []
+        total_calls = len(benchmark.get("models", [])) * len(pages)
+        completed_calls = 0
+
+        for source_file, page_triage in pages:
+            page_number = int(page_triage.get("page_number", 1))
+            page_id = str(page_triage.get("page_id", f"{source_file.stem}:p{page_number}"))
+            rendered_page = ocr_script._read_single_input_page(source_file, page_number, RENDER_DPI)
+            for model in benchmark.get("models", []):
+                model_name = str(model)
+                started = time.perf_counter()
+                usage: dict[str, Any] = {}
+                result: dict[str, Any] = {
+                    "model": model_name,
+                    "page_id": page_id,
+                    "source_file": str(source_file),
+                    "page_number": page_number,
+                    "status": "running",
+                    "started_at": _now(),
+                }
+                results.append(result)
+                benchmark["results"] = results
+                benchmark["completed_calls"] = completed_calls
+                benchmark["total_calls"] = total_calls
+                benchmark["updated_at"] = _now()
+                _write_benchmark(job_id, benchmark)
+                _append_job_event(
+                    job_id,
+                    "benchmark_model_started",
+                    benchmark_id=benchmark_id,
+                    model=model_name,
+                    page_id=page_id,
+                )
+                try:
+                    _throttle_before_provider_call(
+                        job_id,
+                        f"benchmark:{benchmark_id}:{page_id}:{model_name}",
+                        update_job_status=False,
+                    )
+                    artifact, _raw_response = ocr_script._run_validated_json_extraction(
+                        input_path=source_file,
+                        provider=PROVIDER,
+                        api_key=api_key,
+                        model=model_name,
+                        pages=[rendered_page],
+                        page_triage=[page_triage],
+                        language_hints=LANGUAGE_HINTS,
+                        timeout=REQUEST_TIMEOUT,
+                    )
+                    usage = artifact.get("usage") if isinstance(artifact.get("usage"), dict) else {}
+                    first_page_result = _first_page_result(artifact)
+                    result.update(
+                        {
+                            "status": "success",
+                            "duration_seconds": round(time.perf_counter() - started, 2),
+                            "field_count": _count_artifact_fields(artifact),
+                            "document_type": first_page_result.get("document_type"),
+                            "summary": first_page_result.get("printed_text_summary"),
+                            "usage": usage,
+                        }
+                    )
+                    _record_provider_event(
+                        job_id=job_id,
+                        page_id=f"benchmark:{benchmark_id}:{page_id}",
+                        source_file=str(source_file),
+                        page_number=page_number,
+                        status="success",
+                        usage=usage,
+                        attempt=1,
+                        max_attempts=1,
+                        model=model_name,
+                    )
+                except Exception as exc:
+                    error_message = ocr_script._redact_secrets(str(exc))
+                    result.update(
+                        {
+                            "status": "failure",
+                            "duration_seconds": round(time.perf_counter() - started, 2),
+                            "error": error_message,
+                        }
+                    )
+                    _record_provider_event(
+                        job_id=job_id,
+                        page_id=f"benchmark:{benchmark_id}:{page_id}",
+                        source_file=str(source_file),
+                        page_number=page_number,
+                        status="failure",
+                        error=error_message,
+                        attempt=1,
+                        max_attempts=1,
+                        model=model_name,
+                    )
+                completed_calls += 1
+                benchmark["results"] = results
+                benchmark["completed_calls"] = completed_calls
+                benchmark["total_calls"] = total_calls
+                benchmark["updated_at"] = _now()
+                _write_benchmark(job_id, benchmark)
+
+        failures = sum(1 for result in results if result.get("status") == "failure")
+        benchmark["status"] = "completed" if failures == 0 else "completed_with_errors"
+        benchmark["message"] = "Benchmark completed."
+        benchmark["completed_at"] = _now()
+        benchmark["updated_at"] = _now()
+        benchmark["failure_count"] = failures
+        _write_benchmark(job_id, benchmark)
+        _append_job_event(
+            job_id,
+            "benchmark_completed",
+            benchmark_id=benchmark_id,
+            status=benchmark["status"],
+            completed_calls=completed_calls,
+            failure_count=failures,
+        )
+    except Exception as exc:
+        benchmark = _load_benchmark(job_id, benchmark_id)
+        benchmark["status"] = "failed"
+        benchmark["message"] = ocr_script._redact_secrets(str(exc))
+        benchmark["updated_at"] = _now()
+        _write_benchmark(job_id, benchmark)
+        _append_job_event(job_id, "benchmark_failed", benchmark_id=benchmark_id, error=benchmark["message"])
+    finally:
+        try:
+            worker_lock.release()
+        except RuntimeError:
+            pass
+
+
 def _process_job(job_id: str) -> None:
     if not worker_lock.acquire(blocking=False):
         _append_job_event(job_id, "job_queued", reason="another_job_running")
@@ -1392,6 +1837,12 @@ def session(request: Request) -> dict[str, Any]:
     }
 
 
+@app.get("/models")
+def models(request: Request) -> dict[str, Any]:
+    _require_demo_access(request)
+    return _model_catalog()
+
+
 @app.post("/login")
 async def login(request: Request) -> JSONResponse:
     payload = await request.json()
@@ -1633,6 +2084,75 @@ def view_job_logs(job_id: str, request: Request) -> str:
     token = request.query_params.get("token") or request.query_params.get("admin_token") or ""
     _require_demo_access(request)
     return _job_logs_page(_load_job(job_id), _job_events(job_id), token)
+
+
+@app.get("/jobs/{job_id}/benchmarks", response_class=HTMLResponse)
+def view_benchmarks(job_id: str, request: Request) -> str:
+    token = request.query_params.get("token") or request.query_params.get("admin_token") or ""
+    _require_admin_access(request)
+    _load_job(job_id)
+    return _benchmarks_page(job_id, _list_benchmarks(job_id), token)
+
+
+@app.post("/jobs/{job_id}/benchmarks")
+async def create_benchmark(job_id: str, request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    _require_admin_access(request)
+    job = _load_job(job_id)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    models = _safe_benchmark_models(payload.get("models"))
+    max_pages = max(1, min(int(payload.get("max_pages") or 1), MAX_BENCHMARK_PAGES))
+    _triage, pages = _benchmark_pages_for_job(
+        job,
+        requested_page_ids=payload.get("page_ids"),
+        max_pages=max_pages,
+    )
+    if not pages:
+        raise HTTPException(status_code=400, detail="No benchmark pages selected.")
+    benchmark_id = str(uuid4())
+    benchmark = {
+        "benchmark_id": benchmark_id,
+        "job_id": job_id,
+        "status": "queued",
+        "message": "Benchmark queued.",
+        "created_at": _now(),
+        "updated_at": _now(),
+        "provider": PROVIDER,
+        "models": models,
+        "page_ids": [str(page.get("page_id") or "") for _source, page in pages],
+        "max_pages": max_pages,
+        "total_calls": len(models) * len(pages),
+        "completed_calls": 0,
+        "results": [],
+    }
+    _write_benchmark(job_id, benchmark)
+    _append_job_event(
+        job_id,
+        "benchmark_created",
+        benchmark_id=benchmark_id,
+        models=models,
+        page_ids=benchmark["page_ids"],
+        total_calls=benchmark["total_calls"],
+    )
+    background_tasks.add_task(_process_model_benchmark, job_id, benchmark_id)
+    return benchmark
+
+
+@app.get("/jobs/{job_id}/benchmarks/{benchmark_id}.json")
+def get_benchmark_json(job_id: str, benchmark_id: str, request: Request) -> dict[str, Any]:
+    _require_admin_access(request)
+    _load_job(job_id)
+    return _load_benchmark(job_id, benchmark_id)
+
+
+@app.get("/jobs/{job_id}/benchmarks/{benchmark_id}", response_class=HTMLResponse)
+def view_benchmark(job_id: str, benchmark_id: str, request: Request) -> str:
+    token = request.query_params.get("token") or request.query_params.get("admin_token") or ""
+    _require_admin_access(request)
+    _load_job(job_id)
+    return _benchmark_result_page(job_id, _load_benchmark(job_id, benchmark_id), token)
 
 
 @app.get("/jobs/{job_id}")

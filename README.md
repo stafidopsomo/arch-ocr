@@ -209,6 +209,8 @@ shape. Keep provider usage conservative while using free or low-tier Gemini:
 - local provider usage ledger for token/cost/rate visibility
 - ordered model fallback with `OCR_MODEL_FALLBACKS` for transient provider
   capacity/rate errors; usage events record the actual model used per page
+- admin-only model benchmarks for comparing Gemini/Gemma candidates on one or
+  two pages before changing production fallback behavior
 
 Gemini rate limits are measured in requests per minute, tokens per minute, and
 requests per day, and they apply per Google project. Active limits should be
@@ -226,6 +228,9 @@ OCR_PROVIDER_MIN_SECONDS_BETWEEN_CALLS=4
 OCR_PROVIDER_MAX_REQUESTS_PER_MINUTE=10
 OCR_PROVIDER_MAX_REQUESTS_PER_DAY=100
 OCR_MODEL_FALLBACKS=gemini-2.5-flash
+OCR_BENCHMARK_MODELS=gemini-3.1-flash-lite-preview,gemini-3-flash-preview,gemma-3-4b-it,gemma-3-12b-it,gemma-3-27b-it,gemma-4-26b-a4b-it,gemma-4-31b-it
+OCR_BENCHMARK_MAX_MODELS=7
+OCR_BENCHMARK_MAX_PAGES=2
 ```
 
 ## Railway Demo Service
@@ -276,6 +281,10 @@ Useful endpoints:
 - `GET /jobs/{job_id}/logs?token=...` - auto-refreshing structured job log
   page for triage, page processing, retries, throttling, and completion.
 - `GET /jobs/{job_id}/events?token=...` - structured job event JSON.
+- `GET /models` - current primary/fallback/benchmark model catalog.
+- `GET /jobs/{job_id}/benchmarks` - admin model benchmark page. Benchmarks
+  call each selected model directly once per selected page and store results
+  under the job volume folder.
 - `GET /usage` - usage page in a browser, or JSON when requested as
   `application/json`.
 - `GET /admin` - simple demo admin page.

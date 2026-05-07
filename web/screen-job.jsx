@@ -122,6 +122,7 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
   const reportUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/report${authQuery}` : "#";
   const packetUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/packet${authQuery}` : "#";
   const reviewUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/review${reviewQuery}` : "#";
+  const benchmarkUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/benchmarks${authQuery}` : "#";
   const timing = estimateJobTiming({ job, pagesSelected, pagesProcessed, status, lang });
 
   useEffect(() => {
@@ -282,6 +283,7 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
                 <a className="btn btn-primary" href={reviewUrl}>{lang === "el" ? "Άνοιγμα προεπισκόπησης" : "Open review"}</a>
                 <a className="btn" href={reportUrl}>{lang === "el" ? "Markdown report" : "Markdown report"}</a>
                 <a className="btn" href={packetUrl}>JSON</a>
+                <a className="btn" href={benchmarkUrl}>{lang === "el" ? "Model tests" : "Model tests"}</a>
               </div>
             )}
             {isActive && (
