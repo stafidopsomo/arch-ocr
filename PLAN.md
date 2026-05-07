@@ -691,6 +691,8 @@ First Railway milestone:
 - Done: static prototype UI served from `/design/arch-ocr.html`.
 - Done: Greek review page with validation checks, clusters, report/JSON links,
   and evidence thumbnails.
+- Done: page coverage messaging for triaged, selected, extracted, and skipped
+  pages so demo caps are visible.
 - Done: dynamic re-analysis for stored packets when opening packet/report/review
   so deterministic fixes can improve old jobs while source PDFs still exist.
 - Done: deterministic embedded-text scan for AFM, KAEK, and ATAK identifiers.
@@ -741,6 +743,7 @@ UI should show:
   upload/preflight immediately, and "Start validation" only becomes available
   after all files have finished uploading.
 - Done: page evidence thumbnails in the server-rendered review page.
+- Done: clear page coverage messaging for selected-vs-skipped pages.
 - Later: dedicated page-by-page extracted-field browser.
 - Done: clusters of repeated names/addresses/identifiers in the review page.
 - Done: warnings and contradictions as validation cards with evidence refs.
@@ -771,7 +774,7 @@ Next implementation focus:
 2. Run one fresh packet with the current cap/settings and compare the review
    page against the source PDFs.
 3. Improve the review page only where it directly helps presentation:
-   clearer page coverage, selected-vs-skipped page messaging, and Greek copy.
+   stronger Greek copy and page-by-page inspection where needed.
 4. Keep deep domain-specific rules parked until there are many more real
    packets to investigate.
 5. After the demo, decide whether the next product layer is real login/history

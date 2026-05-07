@@ -403,6 +403,11 @@ def _review_labels(lang: str) -> dict[str, str]:
             "fields": "Πεδία",
             "checks": "Έλεγχοι",
             "cost": "Εκτ. κόστος",
+            "coverage": "Κάλυψη σελίδων",
+            "extracted_selected": "εξήχθησαν / επιλέχθηκαν",
+            "triaged_total": "σελίδες εντοπίστηκαν συνολικά",
+            "skipped_cap": "σελίδες δεν αναλύθηκαν λόγω ορίου demo",
+            "no_skipped": "Δεν παραλείφθηκαν σελίδες από το όριο demo.",
             "executive": "Σύνοψη",
             "validation": "Έλεγχοι εγκυρότητας",
             "priorities": "Προτεραιότητες ελέγχου",
@@ -428,6 +433,11 @@ def _review_labels(lang: str) -> dict[str, str]:
         "fields": "Fields",
         "checks": "Checks",
         "cost": "Estimated cost",
+        "coverage": "Page Coverage",
+        "extracted_selected": "extracted / selected",
+        "triaged_total": "pages triaged in total",
+        "skipped_cap": "pages were not analyzed because of the demo cap",
+        "no_skipped": "No pages were skipped by the demo cap.",
         "executive": "Executive Summary",
         "validation": "Validation Checks",
         "priorities": "Review Priorities",
@@ -552,6 +562,30 @@ def _render_fuzzy_groups(groups: Any, lang: str = "en") -> str:
     return "".join(cards)
 
 
+def _render_page_coverage(totals: dict[str, Any], labels: dict[str, str]) -> str:
+    pages_triaged = int(totals.get("pages_triaged") or 0)
+    pages_selected = int(totals.get("pages_selected") or 0)
+    pages_extracted = int(totals.get("pages_extracted") or 0)
+    pages_failed = int(totals.get("pages_failed") or 0)
+    skipped = max(pages_triaged - pages_selected, 0)
+    skipped_text = (
+        f"{skipped} {labels['skipped_cap']}"
+        if skipped
+        else labels["no_skipped"]
+    )
+    failed_text = f" · {pages_failed} failed" if pages_failed else ""
+    return f"""
+    <section class="section card coverage-card">
+      <h2>{html.escape(labels['coverage'])}</h2>
+      <div class="coverage-grid">
+        <div><strong>{html.escape(str(pages_extracted))} / {html.escape(str(pages_selected))}</strong><span>{html.escape(labels['extracted_selected'])}{html.escape(failed_text)}</span></div>
+        <div><strong>{html.escape(str(pages_triaged))}</strong><span>{html.escape(labels['triaged_total'])}</span></div>
+        <div class="{html.escape('coverage-warn' if skipped else 'coverage-ok')}"><strong>{html.escape(str(skipped))}</strong><span>{html.escape(skipped_text)}</span></div>
+      </div>
+    </section>
+    """
+
+
 def _field_index_by_ref(packet: dict[str, Any]) -> dict[str, dict[str, Any]]:
     indexed: dict[str, dict[str, Any]] = {}
     for field in ocr_script._iter_packet_fields(packet):
@@ -653,6 +687,13 @@ def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "", 
           .stats {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:18px 0; }}
           .stat {{ background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:14px; }}
           .stat .value {{ font-size:22px; font-weight:700; }}
+          .coverage-card {{ margin-top:-8px; }}
+          .coverage-grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }}
+          .coverage-grid div {{ border:1px solid var(--line); border-radius:7px; background:var(--paper2); padding:12px; }}
+          .coverage-grid strong {{ display:block; font-size:20px; }}
+          .coverage-grid span {{ display:block; color:var(--muted); font-size:13px; }}
+          .coverage-warn {{ border-color:#e2bd5b !important; background:#fff7db !important; }}
+          .coverage-ok {{ border-color:#b7ddc8 !important; background:#eef8f2 !important; }}
           .badge {{ display:inline-flex; align-items:center; border-radius:999px; padding:2px 8px; font-size:12px; font-weight:700; border:1px solid var(--line); background:var(--paper2); }}
           .badge-pass {{ color:#27724f; background:#eef8f2; }}
           .badge-warning {{ color:#926800; background:#fff7db; }}
@@ -692,6 +733,7 @@ def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "", 
             <div class="stat"><div class="muted">{html.escape(labels['checks'])}</div><div class="value">{html.escape(str(check_summary.get("check_count", 0)))}</div><div>{status_counts}</div></div>
             <div class="stat"><div class="muted">{html.escape(labels['cost'])}</div><div class="value">${estimated_cost:.6f}</div></div>
           </section>
+          {_render_page_coverage(totals, labels)}
           <div class="grid">
             <div>
               <section class="section card">

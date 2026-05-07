@@ -42,6 +42,8 @@ Recent review-page improvements:
 - Embedded PDF text is scanned deterministically for AFM, KAEK, and ATAK so
   obvious text-layer identifiers are not missed by the vision model.
 - Validation evidence refs can show source-page thumbnails in the review page.
+- Review pages show page coverage explicitly: triaged pages, selected pages,
+  extracted pages, and pages skipped by the current demo cap.
 
 ## Current CLI
 
