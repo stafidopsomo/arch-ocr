@@ -8,7 +8,6 @@ function PacketsScreen({ token, mode = "packets", onOpenJob, onNewPacket, onDele
   const [busyJob, setBusyJob] = useState("");
 
   useEffect(() => {
-    if (!token) return;
     let stopped = false;
     async function load() {
       try {
