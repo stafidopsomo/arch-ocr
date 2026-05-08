@@ -108,8 +108,8 @@ Recommended cheap provider:
 ```env
 CLOUD_PROVIDER=gemini
 GEMINI_API_KEY=your_key_here
-GEMINI_MODEL=gemini-2.5-flash-lite
-OCR_MODEL_FALLBACKS=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.1-flash-lite-preview
+OCR_MODEL_FALLBACKS=gemini-3-flash-preview
 ```
 
 One-page markdown test:
@@ -755,6 +755,16 @@ Gemini limit notes:
   Gemma model handles the same pages reliably.
 - Live API models are currently out of scope for packet OCR because this app is
   a batch `generateContent` workflow, not a real-time voice/video session.
+- Latest model benchmark signal:
+  - `gemini-3.1-flash-lite-preview`: valid JSON, lower field count on the test
+    page.
+  - `gemini-3-flash-preview`: valid JSON, more fields, good fallback candidate.
+  - Gemma 3 hosted IDs are not currently exposed by this Gemini API key/project.
+  - Gemma 4 hosted IDs are exposed but need a separate JSON-compliance strategy
+    and were too slow for the current demo prompt.
+- Next model research should broaden to OpenRouter and compare native PDF/file
+  input, OpenRouter file-parser engines, rendered page-image input, structured
+  JSON reliability, Greek OCR quality, and practical free/paid limits.
 
 Keep the one-service Railway demo until it has been presented and the workflow
 is accepted. Split into a proper web service + API service + Postgres only when

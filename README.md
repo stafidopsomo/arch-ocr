@@ -124,8 +124,8 @@ Recommended `.env` start:
 ```env
 CLOUD_PROVIDER=gemini
 GEMINI_API_KEY=your_key_here
-GEMINI_MODEL=gemini-2.5-flash-lite
-OCR_MODEL_FALLBACKS=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.1-flash-lite-preview
+OCR_MODEL_FALLBACKS=gemini-3-flash-preview
 ```
 
 ## Providers
@@ -219,6 +219,13 @@ Provider "high demand" / 503 responses can still happen below visible limits,
 so the demo should prefer stable model IDs over preview IDs when reliability is
 more important than testing the newest model.
 
+Current benchmark signal: `gemini-3-flash-preview` produced valid JSON and more
+fields than `gemini-3.1-flash-lite-preview` on the latest test page, while Gemma
+4 was reachable but too slow/not JSON-compliant with the current prompt. Gemma 3
+hosted model IDs were not exposed by the current Gemini API key/project. Keep
+Gemma/OpenRouter work in benchmark/research mode until more PDFs prove quality
+and reliability.
+
 Planned env controls:
 
 ```env
@@ -227,9 +234,9 @@ OCR_MAX_PAGES_PER_PACKET=20
 OCR_PROVIDER_MIN_SECONDS_BETWEEN_CALLS=4
 OCR_PROVIDER_MAX_REQUESTS_PER_MINUTE=10
 OCR_PROVIDER_MAX_REQUESTS_PER_DAY=100
-OCR_MODEL_FALLBACKS=gemini-2.5-flash
-OCR_BENCHMARK_MODELS=gemini-3.1-flash-lite-preview,gemini-3-flash-preview,gemma-3-4b-it,gemma-3-12b-it,gemma-3-27b-it,gemma-4-26b-a4b-it,gemma-4-31b-it
-OCR_BENCHMARK_MAX_MODELS=7
+OCR_MODEL_FALLBACKS=gemini-3-flash-preview
+OCR_BENCHMARK_MODELS=gemini-3.1-flash-lite-preview,gemini-3-flash-preview,gemma-4-26b-a4b-it,gemma-4-31b-it
+OCR_BENCHMARK_MAX_MODELS=4
 OCR_BENCHMARK_MAX_PAGES=2
 ```
 
