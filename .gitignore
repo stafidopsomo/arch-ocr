@@ -2,10 +2,11 @@
 output/
 storage/
 
-# Private local document samples
-test_inputs/private/
+# Private local document samples — ignore everything in test_inputs/
+# except a .gitkeep placeholder if you want to keep the folder tracked.
+test_inputs/*
+!test_inputs/.gitkeep
 samples/private/
-test_inputs/ΑΥΘΑΙΡΕΤΟ Λ.ΚΑΤΣΩΝΗ 15 ΤΣΙΤΙΡΙΔΗΣ ΓΙΑ ΕΕΔΜΚ ΚΑΙ ΕΓΚΡΙΣΗ ΕΡΓΑΣΙΩΝ ΚΑΤΕΔΑΦΙΣΗΣ/
 
 # Python
 __pycache__/

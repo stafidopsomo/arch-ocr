@@ -315,12 +315,14 @@ def _v2_thumb(job_id: str, token: str, evidence: dict[str, Any]) -> str:
     query_values = {"field_ref": ref}
     if token:
         query_values["token"] = token
-    thumb_url = f"/jobs/{html.escape(job_id)}/page-thumbnail?{html.escape(urlencode(query_values))}"
-    label = html.escape(str(evidence.get("value") or evidence.get("page_id") or ref))
+    qs = html.escape(urlencode(query_values))
+    thumb_url = f"/jobs/{html.escape(job_id)}/page-thumbnail?{qs}"
+    full_url = f"/jobs/{html.escape(job_id)}/page-image?{qs}"
+    label = html.escape(str(evidence.get("value") or evidence.get("label") or evidence.get("page_id") or ref))
     page = html.escape(str(evidence.get("page_id") or ""))
     return f"""
-    <a class="ev" href="{thumb_url}" target="_blank">
-      <img src="{thumb_url}" loading="lazy" />
+    <a class="ev" href="{full_url}" data-thumb="{thumb_url}" data-full="{full_url}" data-label="{label}" target="_blank" rel="noopener">
+      <img src="{thumb_url}" loading="lazy" alt="{label}" />
       <span>{label}</span>
       <small>{page}</small>
     </a>
@@ -458,7 +460,40 @@ def _render_issues_v2(issues: Any, job_id: str, token: str, packet: dict[str, An
     return "".join(cards)
 
 
+def _render_v2_source_files(files: list[dict[str, Any]]) -> str:
+    if not files:
+        return '<p class="muted">Δεν καταγράφηκαν αρχεία πηγής.</p>'
+    rows = "".join(
+        f"<li><span>{html.escape(str(f.get('name') or 'file'))}</span><span class='muted'>{html.escape(str(f.get('page_count') or 0))} σελ.</span></li>"
+        for f in files[:20]
+    )
+    extra = f"<li class='muted'><span>+{len(files) - 20} ακόμα</span><span></span></li>" if len(files) > 20 else ""
+    return f"<ul class='file-list'>{rows}{extra}</ul>"
+
+
+def _render_v2_errors(errors: list[dict[str, Any]]) -> str:
+    if not errors:
+        return '<p class="muted">Δεν υπάρχουν σφάλματα εξαγωγής.</p>'
+    rows = "".join(
+        f"<li><strong>{html.escape(str(e.get('page_id') or 'page'))}</strong><span class='muted'>{html.escape(str(e.get('message') or ''))}</span></li>"
+        for e in errors[:12]
+    )
+    return f"<ul class='error-list'>{rows}</ul>"
+
+
+def _render_v2_list(items: list[Any]) -> str:
+    if not items:
+        return '<p class="muted">Δεν υπάρχουν στοιχεία.</p>'
+    return "<ul>" + "".join(f"<li>{html.escape(str(item))}</li>" for item in items) + "</ul>"
+
+
 def _render_packet_review_v2(job_id: str, packet: dict[str, Any], token: str = "") -> str:
+    # Render parity note: every top-level key from the packet JSON is either
+    # surfaced here (hero, issues, identity, people, documents, source files,
+    # extraction errors, executive summary, triage) or intentionally omitted
+    # because it's already transformed: `clusters` → property/people/permits,
+    # `page_extractions` → field-level evidence thumbnails, `fuzzy_groups` is
+    # the input to the clustering already shown above.
     model = build_review_model(packet)
     metrics = model["metrics"]
     status_label, status_tone = _v2_status_label(str(model.get("status")))
@@ -466,9 +501,31 @@ def _render_packet_review_v2(job_id: str, packet: dict[str, Any], token: str = "
     primary_address = model["property"].get("primary_address") or {}
     kaek_items = model["property"].get("kaek") or []
     kaek_value = kaek_items[0].get("value") if kaek_items else ""
+    address_variants = model["property"].get("address_variants") or []
+    possible_other = model["property"].get("possible_other_addresses") or []
+    permits = model.get("permits") or []
+    people = model.get("people") or []
+    issues = model.get("issues") or []
+    documents = model.get("documents") or []
+    source_files = model.get("source_files") or []
+    extraction_errors = model.get("extraction_errors") or []
+    triage_summary = model.get("triage_summary") or {}
+    key_findings = model.get("key_findings") or []
+    review_priorities = model.get("review_priorities") or []
+    handwritten = metrics.get("handwritten_field_count") or 0
+    low_conf = metrics.get("low_confidence_field_count") or 0
+    quality_tile = ""
+    if handwritten or low_conf:
+        quality_tile = _v2_fact_card(
+            "Ποιότητα πεδίων",
+            f"{handwritten} χειρόγραφα · {low_conf} χαμηλή",
+            "πεδία που θέλουν προσοχή",
+            "fail",
+        )
     return f"""
     <html>
       <head>
+        <meta charset="utf-8" />
         <title>arch-ocr architect review {html.escape(job_id)}</title>
         <style>
           :root {{ --bg:#fbfaf7; --paper:#fff; --paper2:#f4f1ea; --line:#e3ded1; --ink:#151922; --muted:#6f7682; --accent:#1a2540; --ok:#2f7a53; --warn:#9a6b00; --fail:#a43a2d; }}
@@ -476,7 +533,7 @@ def _render_packet_review_v2(job_id: str, packet: dict[str, Any], token: str = "
           body {{ margin:0; background:var(--bg); color:var(--ink); font-family:Inter, ui-sans-serif, system-ui, sans-serif; line-height:1.45; }}
           header {{ padding:28px 36px 22px; border-bottom:1px solid var(--line); background:rgba(251,250,247,.96); position:sticky; top:0; z-index:2; }}
           main {{ padding:28px 36px 56px; }}
-          h1 {{ margin:8px 0 8px; font-family:Georgia, serif; font-size:34px; line-height:1.1; max-width:1050px; }}
+          h1 {{ margin:8px 0 8px; font-family:Georgia, serif; font-size:30px; line-height:1.15; max-width:1050px; }}
           h2 {{ margin:0 0 14px; font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }}
           h3 {{ margin:0; font-size:16px; }}
           .muted {{ color:var(--muted); }}
@@ -488,7 +545,7 @@ def _render_packet_review_v2(job_id: str, packet: dict[str, Any], token: str = "
           .status-ok {{ color:var(--ok); background:#edf8f1; }}
           .status-warn {{ color:var(--warn); background:#fff7dc; }}
           .status-fail {{ color:var(--fail); background:#fff0ed; }}
-          .hero-grid {{ display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:12px; margin-top:20px; }}
+          .hero-grid {{ display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; margin-top:20px; }}
           .fact,.card,.issue,.doc-group,.row-card {{ background:var(--paper); border:1px solid var(--line); border-radius:8px; }}
           .fact {{ padding:14px; min-height:92px; }}
           .fact-label,.row-meta,.row-variants,.doc-head span,.section-head span {{ color:var(--muted); font-size:12px; }}
@@ -497,19 +554,22 @@ def _render_packet_review_v2(job_id: str, packet: dict[str, Any], token: str = "
           .fact-fail {{ border-color:#e2aaa2; background:#fff7f5; }}
           .layout {{ display:grid; grid-template-columns:minmax(0,1.2fr) minmax(360px,.8fr); gap:22px; align-items:start; }}
           .card {{ padding:18px; margin-bottom:18px; }}
+          .subsection {{ margin-top:18px; }}
+          .subsection:first-child {{ margin-top:0; }}
           .section-head,.doc-head,.issue-head {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }}
           .doc-group {{ padding:14px; margin-bottom:10px; }}
           .doc-group ul {{ list-style:none; padding:0; margin:8px 0 0; }}
           .doc-group li {{ display:flex; justify-content:space-between; gap:16px; border-top:1px solid var(--line); padding:7px 0; font-size:13px; }}
-          .row-card {{ padding:13px; margin-bottom:8px; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:start; }}
+          .row-card {{ padding:13px; margin-bottom:10px; display:flex; flex-direction:column; gap:10px; }}
           .row-value {{ font-weight:750; overflow-wrap:anywhere; }}
           .row-variants {{ margin-top:4px; }}
-          .evidence {{ display:flex; gap:7px; flex-wrap:wrap; justify-content:flex-end; }}
-          .ev {{ width:108px; border:1px solid var(--line); border-radius:6px; overflow:hidden; background:var(--paper2); text-decoration:none; color:var(--ink); }}
-          .ev img {{ width:100%; height:70px; object-fit:cover; object-position:top center; display:block; border-bottom:1px solid var(--line); background:#fff; }}
-          .ev span,.ev small {{ display:block; padding:0 6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
-          .ev span {{ padding-top:5px; font-size:11px; font-weight:700; }}
-          .ev small {{ padding-bottom:5px; color:var(--muted); font-size:10px; }}
+          .evidence {{ display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-start; }}
+          .ev {{ width:128px; border:1px solid var(--line); border-radius:6px; overflow:hidden; background:var(--paper2); text-decoration:none; color:var(--ink); cursor:zoom-in; transition:transform .12s ease, box-shadow .12s ease; }}
+          .ev:hover {{ transform:translateY(-1px); box-shadow:0 2px 6px rgba(0,0,0,.07); }}
+          .ev img {{ width:100%; height:84px; object-fit:cover; object-position:top center; display:block; border-bottom:1px solid var(--line); background:#fff; }}
+          .ev span,.ev small {{ display:block; padding:0 6px; }}
+          .ev span {{ padding-top:5px; font-size:11px; font-weight:700; line-height:1.3; max-height:2.6em; overflow:hidden; text-overflow:ellipsis; word-break:break-word; }}
+          .ev small {{ padding-bottom:5px; color:var(--muted); font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
           .issue {{ padding:15px; margin-bottom:10px; }}
           .issue-head {{ justify-content:flex-start; }}
           .issue-head span {{ border-radius:999px; padding:3px 8px; font-size:11px; font-weight:800; background:var(--paper2); }}
@@ -518,7 +578,24 @@ def _render_packet_review_v2(job_id: str, packet: dict[str, Any], token: str = "
           .issue .action {{ font-weight:700; }}
           .issue ul {{ margin:8px 0; padding-left:18px; }}
           .person-group {{ margin-bottom:18px; }}
-          @media (max-width: 1050px) {{ .layout,.hero-grid {{ grid-template-columns:1fr; }} header,main {{ padding-left:18px; padding-right:18px; }} .row-card {{ grid-template-columns:1fr; }} .evidence {{ justify-content:flex-start; }} }}
+          .file-list,.error-list {{ list-style:none; padding:0; margin:0; }}
+          .file-list li {{ display:flex; justify-content:space-between; gap:12px; border-top:1px solid var(--line); padding:8px 0; font-size:13px; }}
+          .file-list li:first-child {{ border-top:none; }}
+          .error-list li {{ display:flex; flex-direction:column; gap:2px; border-top:1px solid var(--line); padding:8px 0; font-size:13px; }}
+          .error-list li:first-child {{ border-top:none; }}
+          details {{ background:var(--paper); border:1px solid var(--line); border-radius:8px; padding:12px 16px; margin-bottom:12px; }}
+          details summary {{ cursor:pointer; font-weight:700; font-size:13px; color:var(--accent); list-style:none; }}
+          details summary::-webkit-details-marker {{ display:none; }}
+          details summary::before {{ content:"▸ "; display:inline-block; transition:transform .15s; }}
+          details[open] summary::before {{ transform:rotate(90deg); }}
+          details ul {{ margin:10px 0 4px; padding-left:22px; }}
+          .lightbox {{ position:fixed; inset:0; background:rgba(15,18,28,.88); display:none; align-items:center; justify-content:center; z-index:50; cursor:zoom-out; padding:24px; }}
+          .lightbox.open {{ display:flex; }}
+          .lightbox img {{ max-width:96vw; max-height:92vh; width:auto; height:auto; box-shadow:0 12px 40px rgba(0,0,0,.4); background:#fff; border-radius:4px; }}
+          .lightbox-meta {{ position:absolute; top:14px; left:18px; right:60px; color:#f3efe5; font-size:13px; line-height:1.4; pointer-events:none; }}
+          .lightbox-close {{ position:absolute; top:12px; right:14px; width:36px; height:36px; border-radius:50%; border:none; background:rgba(255,255,255,.18); color:#fff; font-size:20px; cursor:pointer; }}
+          .lightbox-close:hover {{ background:rgba(255,255,255,.3); }}
+          @media (max-width: 1050px) {{ .layout {{ grid-template-columns:1fr; }} header,main {{ padding-left:18px; padding-right:18px; }} }}
         </style>
       </head>
       <body>
@@ -537,39 +614,88 @@ def _render_packet_review_v2(job_id: str, packet: dict[str, Any], token: str = "
             {_v2_fact_card("ΚΑΕΚ", kaek_value, f"{kaek_items[0].get('mention_count', 0)} αναφορές" if kaek_items else "")}
             {_v2_fact_card("Σελίδες", f"{metrics['pages_extracted']} / {metrics['pages_selected']}", f"{metrics['pages_failed']} αποτυχίες", "fail" if metrics["pages_failed"] else "")}
             {_v2_fact_card("Πεδία / κόστος", f"{metrics['field_count']} πεδία", f"${metrics['estimated_cost_usd']:.4f} εκτίμηση")}
+            {quality_tile}
           </section>
         </header>
         <main>
           <div class="layout">
             <div>
               <section class="card">
-                <h2>Ταυτότητα ακινήτου</h2>
-                <div class="section-head"><h3>Παραλλαγές που φαίνεται να ανήκουν στο ίδιο ακίνητο</h3><span>βάσει επαναλήψεων και fuzzy matching</span></div>
-                {_v2_cluster_rows(model["property"].get("address_variants"), job_id=job_id, token=token, limit=10)}
-                <div class="section-head" style="margin-top:18px;"><h3>Πιθανές άλλες διευθύνσεις / ιστορικές αναφορές</h3><span>θέλουν ανθρώπινη κρίση</span></div>
-                {_v2_cluster_rows(model["property"].get("possible_other_addresses"), job_id=job_id, token=token, limit=6)}
-              </section>
-              <section class="card">
-                <h2>Άδειες και αναγνωριστικά</h2>
-                {_v2_cluster_rows(model.get("permits"), job_id=job_id, token=token, limit=10)}
-              </section>
-              <section class="card">
-                <h2>Πρόσωπα και ρόλοι</h2>
-                {_render_people_v2(model.get("people"), job_id, token)}
+                <h2>Ταυτότητα φακέλου</h2>
+                <div class="subsection">
+                  <div class="section-head"><h3>Διευθύνσεις του ακινήτου</h3><span>βάσει επαναλήψεων και fuzzy matching</span></div>
+                  {_v2_cluster_rows(address_variants, job_id=job_id, token=token, limit=10)}
+                </div>
+                {('<div class="subsection"><div class="section-head"><h3>Πιθανές άλλες διευθύνσεις / ιστορικές αναφορές</h3><span>θέλουν ανθρώπινη κρίση</span></div>' + _v2_cluster_rows(possible_other, job_id=job_id, token=token, limit=6) + '</div>') if possible_other else ''}
+                <div class="subsection">
+                  <div class="section-head"><h3>Άδειες και αναγνωριστικά</h3><span>{html.escape(str(len(permits)))} ομάδες</span></div>
+                  {_v2_cluster_rows(permits, job_id=job_id, token=token, limit=10)}
+                </div>
+                <div class="subsection">
+                  <div class="section-head"><h3>Πρόσωπα και ρόλοι</h3><span>{html.escape(str(sum(len(g.get('items') or []) for g in people if isinstance(g, dict))))} ομάδες</span></div>
+                  {_render_people_v2(people, job_id, token)}
+                </div>
               </section>
             </div>
             <aside>
               <section id="issues" class="card">
                 <h2>Θέματα προς έλεγχο</h2>
-                {_render_issues_v2(model.get("issues"), job_id, token, packet)}
+                {_render_issues_v2(issues, job_id, token, packet)}
               </section>
               <section class="card">
                 <h2>Χάρτης εγγράφων</h2>
-                {_render_document_groups_v2(model.get("documents"))}
+                {_render_document_groups_v2(documents)}
+                <div class="subsection">
+                  <div class="section-head"><h3>Αρχεία πηγής</h3><span>{html.escape(str(len(source_files)))} αρχεία</span></div>
+                  {_render_v2_source_files(source_files)}
+                </div>
+                <div class="subsection">
+                  <div class="section-head"><h3>Σφάλματα εξαγωγής</h3><span>{html.escape(str(len(extraction_errors)))}</span></div>
+                  {_render_v2_errors(extraction_errors)}
+                </div>
               </section>
             </aside>
           </div>
+          {('<details><summary>Σύνοψη AI: ευρήματα</summary>' + _render_v2_list(key_findings) + '</details>') if key_findings else ''}
+          {('<details><summary>Σύνοψη AI: προτεραιότητες ελέγχου</summary>' + _render_v2_list(review_priorities) + '</details>') if review_priorities else ''}
+          {('<details><summary>Triage σελίδων</summary><p class="muted">Σύνολο: ' + html.escape(str(triage_summary.get('pages_total', 0))) + ' · Επιλέχθηκαν: ' + html.escape(str(triage_summary.get('pages_selected', 0))) + ' · Παραλείφθηκαν: ' + html.escape(str(triage_summary.get('pages_skipped', 0))) + '</p>' + (_render_v2_list(triage_summary.get('skip_reasons') or []) if triage_summary.get('skip_reasons') else '') + '</details>') if triage_summary else ''}
         </main>
+        <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Προεπισκόπηση σελίδας">
+          <div class="lightbox-meta" id="lightbox-meta"></div>
+          <button class="lightbox-close" type="button" aria-label="Κλείσιμο">×</button>
+          <img id="lightbox-img" alt="" />
+        </div>
+        <script>
+          (function() {{
+            var box = document.getElementById('lightbox');
+            var img = document.getElementById('lightbox-img');
+            var meta = document.getElementById('lightbox-meta');
+            function open(src, label) {{
+              img.src = src;
+              meta.textContent = label || '';
+              box.classList.add('open');
+              document.body.style.overflow = 'hidden';
+            }}
+            function close() {{
+              box.classList.remove('open');
+              img.src = '';
+              document.body.style.overflow = '';
+            }}
+            document.addEventListener('click', function(ev) {{
+              var a = ev.target.closest && ev.target.closest('a.ev');
+              if (!a) return;
+              if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button === 1) return;
+              ev.preventDefault();
+              open(a.dataset.full || a.href, a.dataset.label || '');
+            }});
+            box.addEventListener('click', function(ev) {{
+              if (ev.target === box || ev.target.classList.contains('lightbox-close')) close();
+            }});
+            document.addEventListener('keydown', function(ev) {{
+              if (ev.key === 'Escape' && box.classList.contains('open')) close();
+            }});
+          }})();
+        </script>
       </body>
     </html>
     """
@@ -747,8 +873,7 @@ def get_review_v2(job_id: str, request: Request) -> str:
     return _render_packet_review_v2(job_id, _load_analyzed_packet(job_id), token)
 
 
-def get_page_thumbnail(job_id: str, request: Request, field_ref: str) -> Response:
-    _require_demo_access(request)
+def _render_page_pixmap(job_id: str, field_ref: str, scale: float) -> bytes:
     packet = _load_analyzed_packet(job_id)
     field = _field_index_by_ref(packet).get(field_ref)
     if not field:
@@ -762,9 +887,23 @@ def get_page_thumbnail(job_id: str, request: Request, field_ref: str) -> Respons
             if page_number > len(document):
                 raise HTTPException(status_code=404, detail="Page not found.")
             page = document[page_number - 1]
-            pixmap = page.get_pixmap(matrix=fitz.Matrix(0.35, 0.35), alpha=False)
-            return Response(content=pixmap.tobytes("jpeg"), media_type="image/jpeg")
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+            return pixmap.tobytes("jpeg" if scale < 1.0 else "png")
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=_redact_secrets(str(exc))) from exc
+
+
+def get_page_thumbnail(job_id: str, request: Request, field_ref: str) -> Response:
+    _require_demo_access(request)
+    return Response(content=_render_page_pixmap(job_id, field_ref, 0.35), media_type="image/jpeg")
+
+
+def get_page_image(job_id: str, request: Request, field_ref: str) -> Response:
+    _require_demo_access(request)
+    return Response(
+        content=_render_page_pixmap(job_id, field_ref, 2.0),
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=300"},
+    )

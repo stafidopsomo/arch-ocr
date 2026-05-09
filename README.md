@@ -281,10 +281,16 @@ Useful endpoints:
   deterministic analysis when source PDFs are still present.
 - `GET /jobs/{job_id}/report` - result markdown report, rebuilt from the
   current analysis.
-- `GET /jobs/{job_id}/review?token=...&lang=el` - browser review page with
-  Greek labels, validation checks, clusters, and evidence thumbnails.
-- `GET /jobs/{job_id}/page-thumbnail?token=...&field_ref=...` - thumbnail for
-  a specific evidence field source page.
+- `GET /jobs/{job_id}/review?token=...&lang=el` - technical review page (v1)
+  with Greek labels, all validation checks, clusters, fuzzy groups, and
+  evidence thumbnails.
+- `GET /jobs/{job_id}/review-v2?token=...` - architect-facing report (v2):
+  property identity, permits, people, issues, document map, source files,
+  extraction errors. Lightbox-zoomable evidence with full-resolution preview.
+- `GET /jobs/{job_id}/page-thumbnail?token=...&field_ref=...` - low-res
+  thumbnail for a specific evidence field source page.
+- `GET /jobs/{job_id}/page-image?token=...&field_ref=...` - full-resolution
+  page render used by the v2 lightbox.
 - `GET /jobs/{job_id}/logs?token=...` - auto-refreshing structured job log
   page for triage, page processing, retries, throttling, and completion.
 - `GET /jobs/{job_id}/events?token=...` - structured job event JSON.
@@ -330,7 +336,8 @@ proves the workflow.
 - The static UI is good enough for presentation/testing, but it is not the final
   Next.js/accounts/admin product.
 
-## Full Plan
+## Architecture and Roadmap
 
-See [PLAN.md](PLAN.md) for the detailed architecture, implementation roadmap,
-batch strategy, validation design, and Railway deployment plan.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the pipeline, provider strategy,
+model benchmarks, validation design, and roadmap. The future Next.js
+production design lives in [CLAUDE_DESIGN_PROMPT.md](CLAUDE_DESIGN_PROMPT.md).

@@ -141,6 +141,9 @@ function JobRow({ job, token, onOpen, onDelete, deleting, lang }) {
   const reviewUrl = token
     ? `/jobs/${encodeURIComponent(job.job_id)}/review?token=${encodeURIComponent(token)}&lang=el`
     : `/jobs/${encodeURIComponent(job.job_id)}/review?lang=el`;
+  const reviewV2Url = token
+    ? `/jobs/${encodeURIComponent(job.job_id)}/review-v2?token=${encodeURIComponent(token)}`
+    : `/jobs/${encodeURIComponent(job.job_id)}/review-v2`;
 
   return (
     <div style={{
@@ -162,7 +165,8 @@ function JobRow({ job, token, onOpen, onDelete, deleting, lang }) {
       <div className="mono">${cost.toFixed(5)}</div>
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
         <button className="btn btn-sm" onClick={onOpen}>{lang === "el" ? "Job" : "Job"}</button>
-        {terminal && status !== "failed" && <a className="btn btn-primary btn-sm" href={reviewUrl}>{lang === "el" ? "Review" : "Review"}</a>}
+        {terminal && status !== "failed" && <a className="btn btn-primary btn-sm" href={reviewV2Url}>{lang === "el" ? "Report" : "Report"}</a>}
+        {terminal && status !== "failed" && <a className="btn btn-sm" href={reviewUrl}>{lang === "el" ? "Tech" : "Tech"}</a>}
         <button className="btn btn-sm" onClick={onDelete} disabled={deleting} style={{ color: "var(--fail)" }}>{deleting ? "..." : (lang === "el" ? "Delete" : "Delete")}</button>
       </div>
     </div>

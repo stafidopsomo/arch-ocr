@@ -122,6 +122,7 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
   const reportUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/report${authQuery}` : "#";
   const packetUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/packet${authQuery}` : "#";
   const reviewUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/review${reviewQuery}` : "#";
+  const reviewV2Url = jobId ? `/jobs/${encodeURIComponent(jobId)}/review-v2${authQuery}` : "#";
   const benchmarkUrl = jobId ? `/jobs/${encodeURIComponent(jobId)}/benchmarks${authQuery}` : "#";
   const timing = estimateJobTiming({ job, pagesSelected, pagesProcessed, status, lang });
 
@@ -176,9 +177,14 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
               </span>
             </StatusPill>
             {!isActive && status !== "failed" && (
-              <a className="btn btn-primary" href={reviewUrl}>
-                {t("job_open_review")} <I.arrow size={14} />
-              </a>
+              <>
+                <a className="btn btn-primary" href={reviewV2Url}>
+                  Architect review <I.arrow size={14} />
+                </a>
+                <a className="btn" href={reviewUrl}>
+                  {t("job_open_review")}
+                </a>
+              </>
             )}
           </div>
         }

@@ -193,6 +193,12 @@ def get_page_thumbnail(job_id: str, request: Request, field_ref: str) -> Respons
     return _get_page_thumbnail(job_id, request, field_ref)
 
 
+@app.get("/jobs/{job_id}/page-image")
+def get_page_image(job_id: str, request: Request, field_ref: str) -> Response:
+    from api.review import get_page_image as _get_page_image
+    return _get_page_image(job_id, request, field_ref)
+
+
 # ---------------------------------------------------------------------------
 # Benchmarks
 # ---------------------------------------------------------------------------

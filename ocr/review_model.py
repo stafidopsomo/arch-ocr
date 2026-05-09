@@ -230,6 +230,56 @@ def _build_permits(packet: dict[str, Any]) -> list[dict[str, Any]]:
     return [_cluster_card(cluster) for cluster in _identifier_clusters(packet, "permit_number")][:16]
 
 
+def _build_source_files(packet: dict[str, Any]) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for entry in _as_list(packet.get("source_files")):
+        if isinstance(entry, dict):
+            files.append(
+                {
+                    "name": _clean_text(entry.get("source_file") or entry.get("name"), "file"),
+                    "page_count": int(entry.get("page_count") or 0),
+                }
+            )
+        elif isinstance(entry, str) and entry.strip():
+            files.append({"name": entry.strip(), "page_count": 0})
+    return files
+
+
+def _build_extraction_errors(packet: dict[str, Any]) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    for err in _as_list(packet.get("errors")):
+        if not isinstance(err, dict):
+            continue
+        errors.append(
+            {
+                "page_id": _clean_text(err.get("page_id") or err.get("source_file"), "page"),
+                "message": _clean_text(err.get("error") or err.get("message")),
+            }
+        )
+    return errors
+
+
+def _build_triage_summary(packet: dict[str, Any]) -> dict[str, Any]:
+    triage = _as_dict(packet.get("triage"))
+    triage_totals = _as_dict(triage.get("totals"))
+    packet_totals = _as_dict(packet.get("totals"))
+    pages_triaged = int(triage_totals.get("pages_triaged") or packet_totals.get("pages_triaged") or 0)
+    pages_selected = int(triage_totals.get("pages_selected") or packet_totals.get("pages_selected") or 0)
+    pages_skipped = int(triage_totals.get("pages_skipped") or max(pages_triaged - pages_selected, 0))
+    skip_reasons: list[str] = []
+    counts = _as_dict(triage_totals.get("skip_reason_counts"))
+    for reason, count in counts.items():
+        skip_reasons.append(f"{reason}: {count}")
+    if not (pages_triaged or pages_selected or pages_skipped):
+        return {}
+    return {
+        "pages_total": pages_triaged,
+        "pages_selected": pages_selected,
+        "pages_skipped": pages_skipped,
+        "skip_reasons": skip_reasons[:8],
+    }
+
+
 def build_review_model(packet: dict[str, Any]) -> dict[str, Any]:
     """Create a higher-level model designed for architect-facing review."""
     totals = _as_dict(packet.get("totals"))
@@ -259,8 +309,9 @@ def build_review_model(packet: dict[str, Any]) -> dict[str, Any]:
         "people": _build_people(packet),
         "permits": _build_permits(packet),
         "issues": issues,
-        "technical_summary": {
-            "key_findings": _as_list(executive.get("key_findings")),
-            "review_priorities": _as_list(executive.get("review_priorities")),
-        },
+        "source_files": _build_source_files(packet),
+        "extraction_errors": _build_extraction_errors(packet),
+        "triage_summary": _build_triage_summary(packet),
+        "key_findings": [str(item) for item in _as_list(executive.get("key_findings"))][:12],
+        "review_priorities": [str(item) for item in _as_list(executive.get("review_priorities"))][:12],
     }
