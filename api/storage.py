@@ -61,7 +61,9 @@ def _packet_path(job_id: str) -> Path:
 
 
 def _safe_filename(name: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._ -]+", "_", Path(name).name).strip()
+    # Allow Unicode (Greek etc.) but strip path separators, control chars,
+    # and Windows-illegal characters so the saved name is safe across OSes.
+    cleaned = re.sub(r"[\x00-\x1f/\\<>:\"|?*]+", "_", Path(name).name).strip().strip(".")
     return cleaned or "upload"
 
 
