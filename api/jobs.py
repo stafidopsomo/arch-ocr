@@ -37,6 +37,38 @@ from ocr.render import SUPPORTED_IMAGE_EXTENSIONS
 ALLOWED_EXTENSIONS = {".pdf", *SUPPORTED_IMAGE_EXTENSIONS}
 
 
+def _safe_upload_relative_path(name: str) -> Path:
+    raw_parts = Path(str(name or "upload").replace("\\", "/")).parts
+    safe_parts = [_safe_filename(part) for part in raw_parts if part not in {"", ".", "..", "/"}]
+    if not safe_parts:
+        safe_parts = ["upload"]
+    return Path(*safe_parts)
+
+
+def _save_upload_file(upload: UploadFile, upload_dir: Path) -> dict[str, Any]:
+    relative_path = _safe_upload_relative_path(upload.filename or "upload")
+    suffix = relative_path.suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {relative_path.name}")
+
+    destination = upload_dir / relative_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    counter = 1
+    while destination.exists():
+        destination = destination.parent / f"{relative_path.stem}_{counter}{suffix}"
+        counter += 1
+
+    with destination.open("wb") as handle:
+        shutil.copyfileobj(upload.file, handle)
+    size = destination.stat().st_size
+    if size > MAX_UPLOAD_MB * 1024 * 1024:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"File too large: {relative_path.name}")
+
+    display_name = str(destination.relative_to(upload_dir))
+    return {"filename": display_name, "path": str(destination), "size_bytes": size}
+
+
 def _job_view_url(job_id: str, token: str = "") -> str:
     suffix = f"?token={token}" if token else ""
     return f"/jobs/{job_id}/view{suffix}"
@@ -93,18 +125,7 @@ async def create_job(
     saved_files: list[dict[str, Any]] = []
 
     for upload in files:
-        filename = _safe_filename(upload.filename or "upload")
-        suffix = Path(filename).suffix.lower()
-        if suffix not in ALLOWED_EXTENSIONS:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {filename}")
-        destination = upload_dir / filename
-        with destination.open("wb") as handle:
-            shutil.copyfileobj(upload.file, handle)
-        size = destination.stat().st_size
-        if size > MAX_UPLOAD_MB * 1024 * 1024:
-            destination.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=f"File too large: {filename}")
-        saved_files.append({"filename": filename, "path": str(destination), "size_bytes": size})
+        saved_files.append(_save_upload_file(upload, upload_dir))
 
     job = {
         "job_id": job_id,
@@ -157,22 +178,7 @@ async def create_draft_job(
     saved_files: list[dict[str, Any]] = []
 
     for upload in files:
-        filename = _safe_filename(upload.filename or "upload")
-        suffix = Path(filename).suffix.lower()
-        if suffix not in ALLOWED_EXTENSIONS:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {filename}")
-        destination = upload_dir / filename
-        counter = 1
-        while destination.exists():
-            destination = upload_dir / f"{Path(filename).stem}_{counter}{suffix}"
-            counter += 1
-        with destination.open("wb") as handle:
-            shutil.copyfileobj(upload.file, handle)
-        size = destination.stat().st_size
-        if size > MAX_UPLOAD_MB * 1024 * 1024:
-            destination.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=f"File too large: {filename}")
-        saved_files.append({"filename": filename, "path": str(destination), "size_bytes": size})
+        saved_files.append(_save_upload_file(upload, upload_dir))
 
     job = {
         "job_id": job_id,

@@ -11,6 +11,7 @@ function UploadScreen({ token, limits, onStart }) {
   const [uploadProgress, setUploadProgress] = useState({});
   const [draftJob, setDraftJob] = useState(null);
   const inputRef = useRef(null);
+  const folderInputRef = useRef(null);
 
   const filesCount = files.length;
   const sizeMb = (files.reduce((s, f) => s + f.size, 0) / (1024 * 1024)).toFixed(1);
@@ -23,8 +24,48 @@ function UploadScreen({ token, limits, onStart }) {
   const allUploaded = filesCount > 0 && draftJob && !uploading;
   const canSubmit = allUploaded && !overFiles && !overSize && !submitting;
 
+  function relativeName(file) {
+    return file.webkitRelativePath || file.relativePath || file.name;
+  }
+
+  function supportedFile(file) {
+    return /\.(pdf|png|jpe?g|tiff?|webp)$/i.test(file.name || "");
+  }
+
+  async function filesFromDataTransfer(dataTransfer) {
+    const items = Array.from(dataTransfer?.items || []);
+    const entries = items
+      .map((item) => item.webkitGetAsEntry?.())
+      .filter(Boolean);
+    if (!entries.length) return Array.from(dataTransfer?.files || []).filter(supportedFile);
+
+    async function walk(entry, prefix = "") {
+      if (entry.isFile) {
+        return new Promise((resolve) => {
+          entry.file((file) => {
+            file.relativePath = `${prefix}${file.name}`;
+            resolve(supportedFile(file) ? [file] : []);
+          }, () => resolve([]));
+        });
+      }
+      if (!entry.isDirectory) return [];
+      const reader = entry.createReader();
+      const children = [];
+      while (true) {
+        const batch = await new Promise((resolve) => reader.readEntries(resolve));
+        if (!batch.length) break;
+        children.push(...batch);
+      }
+      const nested = await Promise.all(children.map((child) => walk(child, `${prefix}${entry.name}/`)));
+      return nested.flat();
+    }
+
+    const nested = await Promise.all(entries.map((entry) => walk(entry)));
+    return nested.flat();
+  }
+
   function addFiles(fileList) {
-    const incoming = Array.from(fileList || []);
+    const incoming = Array.from(fileList || []).filter(supportedFile);
     if (!incoming.length) return;
     setError("");
     const nextFiles = [...files, ...incoming];
@@ -44,7 +85,7 @@ function UploadScreen({ token, limits, onStart }) {
     setError("");
     setUploadProgress(Object.fromEntries(nextFiles.map((file, index) => [index, 0])));
     const form = new FormData();
-    nextFiles.forEach((file) => form.append("files", file));
+    nextFiles.forEach((file) => form.append("files", file, relativeName(file)));
     if (title) form.append("title", title);
     if (token) form.append("token", token);
     const xhr = new XMLHttpRequest();
@@ -112,8 +153,7 @@ function UploadScreen({ token, limits, onStart }) {
         <div
           onDragOver={e => { e.preventDefault(); setDrag(true); }}
           onDragLeave={() => setDrag(false)}
-          onDrop={e => { e.preventDefault(); setDrag(false); addFiles(e.dataTransfer.files); }}
-          onClick={() => inputRef.current?.click()}
+          onDrop={async e => { e.preventDefault(); setDrag(false); addFiles(await filesFromDataTransfer(e.dataTransfer)); }}
           style={{
             border: `1.5px dashed ${drag ? "var(--accent)" : "var(--hairline-2)"}`,
             background: drag ? "var(--accent-tint)" : "var(--paper)",
@@ -138,11 +178,28 @@ function UploadScreen({ token, limits, onStart }) {
             {t("upload_drop")}
           </div>
           <div className="muted" style={{ fontSize: 12.5 }}>{t("upload_hint")}</div>
+          <div style={{ display: "flex", justifyContent: "center", gap: 10, marginTop: 16 }}>
+            <button type="button" className="btn" onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}>
+              {lang === "el" ? "Επιλογή αρχείων" : "Choose files"}
+            </button>
+            <button type="button" className="btn btn-primary" onClick={(e) => { e.stopPropagation(); folderInputRef.current?.click(); }}>
+              {lang === "el" ? "Επιλογή φακέλου" : "Choose folder"}
+            </button>
+          </div>
           <input
             ref={inputRef}
             type="file"
             multiple
             accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.webp"
+            onChange={(e) => addFiles(e.target.files)}
+            style={{ display: "none" }}
+          />
+          <input
+            ref={folderInputRef}
+            type="file"
+            multiple
+            webkitdirectory=""
+            directory=""
             onChange={(e) => addFiles(e.target.files)}
             style={{ display: "none" }}
           />
@@ -231,6 +288,7 @@ function Counter({ label, value, max, over }) {
 function FileRow({ f, progress, onRemove, t }) {
   const ext = f.name.toLowerCase().endsWith(".pdf") ? "PDF" : "IMG";
   const sizeMb = (f.size / (1024 * 1024)).toFixed(1);
+  const displayName = f.webkitRelativePath || f.relativePath || f.name;
   return (
     <div className="card" style={{
       display: "flex", alignItems: "center", gap: 12,
@@ -248,7 +306,7 @@ function FileRow({ f, progress, onRemove, t }) {
 
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, color: "var(--ink-1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "var(--font-mono)" }}>
-          {f.name}
+          {displayName}
         </div>
         <div className="muted" style={{ fontSize: 11.5, marginTop: 1 }}>
           {sizeMb} MB · {Math.round(progress || 0)}%

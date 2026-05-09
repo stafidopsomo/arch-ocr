@@ -5,6 +5,7 @@ storage/
 # Private local document samples
 test_inputs/private/
 samples/private/
+test_inputs/ΑΥΘΑΙΡΕΤΟ Λ.ΚΑΤΣΩΝΗ 15 ΤΣΙΤΙΡΙΔΗΣ ΓΙΑ ΕΕΔΜΚ ΚΑΙ ΕΓΚΡΙΣΗ ΕΡΓΑΣΙΩΝ ΚΑΤΕΔΑΦΙΣΗΣ/
 
 # Python
 __pycache__/
