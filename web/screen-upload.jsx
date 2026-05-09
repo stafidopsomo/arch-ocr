@@ -9,6 +9,7 @@ function UploadScreen({ token, limits, onStart }) {
   const [submitting, setSubmitting] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState({});
+  const [totalUploadProgress, setTotalUploadProgress] = useState(0);
   const [draftJob, setDraftJob] = useState(null);
   const inputRef = useRef(null);
   const folderInputRef = useRef(null);
@@ -71,6 +72,7 @@ function UploadScreen({ token, limits, onStart }) {
     const nextFiles = [...files, ...incoming];
     setFiles(nextFiles);
     setDraftJob(null);
+    setTotalUploadProgress(0);
     uploadDraft(nextFiles);
   }
   function remove(i) {
@@ -78,11 +80,13 @@ function UploadScreen({ token, limits, onStart }) {
     setFiles(nextFiles);
     setDraftJob(null);
     setUploadProgress({});
+    setTotalUploadProgress(0);
     if (nextFiles.length) uploadDraft(nextFiles);
   }
   function uploadDraft(nextFiles) {
     setUploading(true);
     setError("");
+    setTotalUploadProgress(0);
     setUploadProgress(Object.fromEntries(nextFiles.map((file, index) => [index, 0])));
     const form = new FormData();
     nextFiles.forEach((file) => form.append("files", file, relativeName(file)));
@@ -96,7 +100,7 @@ function UploadScreen({ token, limits, onStart }) {
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable) return;
       const pct = Math.max(1, Math.round((event.loaded / event.total) * 100));
-      setUploadProgress(Object.fromEntries(nextFiles.map((file, index) => [index, pct])));
+      setTotalUploadProgress(pct);
     };
     xhr.onload = () => {
       setUploading(false);
@@ -106,6 +110,7 @@ function UploadScreen({ token, limits, onStart }) {
         return;
       }
       setDraftJob(data);
+      setTotalUploadProgress(100);
       setUploadProgress(Object.fromEntries(nextFiles.map((file, index) => [index, 100])));
     };
     xhr.onerror = () => {
@@ -214,6 +219,29 @@ function UploadScreen({ token, limits, onStart }) {
           </div>
         </div>
 
+        {files.length > 0 && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 5 }}>
+              <div className="muted" style={{ fontSize: 12 }}>
+                {uploading
+                  ? (lang === "el" ? "Συνολικό ανέβασμα" : "Total upload")
+                  : draftJob
+                  ? (lang === "el" ? "Ανέβηκαν όλα τα αρχεία" : "All files uploaded")
+                  : (lang === "el" ? "Αρχεία σε αναμονή" : "Files pending")}
+              </div>
+              <div className="mono muted" style={{ fontSize: 11 }}>{Math.round(totalUploadProgress)}%</div>
+            </div>
+            <div style={{ height: 5, background: "var(--paper-2)", borderRadius: 999, overflow: "hidden", border: "1px solid var(--hairline)" }}>
+              <div style={{
+                width: `${Math.round(totalUploadProgress)}%`,
+                height: "100%",
+                background: totalUploadProgress >= 100 ? "var(--pass)" : "var(--accent)",
+                transition: "width 160ms",
+              }} />
+            </div>
+          </div>
+        )}
+
         {(overFiles || overSize || error) && (
           <div style={{
             marginTop: 14,
@@ -232,7 +260,7 @@ function UploadScreen({ token, limits, onStart }) {
             <div className="label" style={{ marginBottom: 10 }}>{t("upload_files")}</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {files.map((f, i) => (
-                <FileRow key={`${f.name}-${i}`} f={f} progress={uploadProgress[i] || 0} onRemove={() => remove(i)} t={t} />
+                <FileRow key={`${f.name}-${i}`} f={f} progress={uploadProgress[i] || 0} uploading={uploading} onRemove={() => remove(i)} t={t} lang={lang} />
               ))}
             </div>
           </div>
@@ -285,10 +313,16 @@ function Counter({ label, value, max, over }) {
   );
 }
 
-function FileRow({ f, progress, onRemove, t }) {
+function FileRow({ f, progress, uploading, onRemove, t, lang }) {
   const ext = f.name.toLowerCase().endsWith(".pdf") ? "PDF" : "IMG";
   const sizeMb = (f.size / (1024 * 1024)).toFixed(1);
   const displayName = f.webkitRelativePath || f.relativePath || f.name;
+  const complete = progress >= 100;
+  const state = complete
+    ? (lang === "el" ? "ανέβηκε" : "uploaded")
+    : uploading
+    ? (lang === "el" ? "στο batch ανεβάσματος" : "uploading batch")
+    : (lang === "el" ? "αναμονή" : "pending");
   return (
     <div className="card" style={{
       display: "flex", alignItems: "center", gap: 12,
@@ -309,10 +343,10 @@ function FileRow({ f, progress, onRemove, t }) {
           {displayName}
         </div>
         <div className="muted" style={{ fontSize: 11.5, marginTop: 1 }}>
-          {sizeMb} MB · {Math.round(progress || 0)}%
+          {sizeMb} MB · {state}
         </div>
         <div style={{ height: 4, background: "var(--paper-2)", borderRadius: 999, overflow: "hidden", marginTop: 6 }}>
-          <div style={{ width: `${Math.round(progress || 0)}%`, height: "100%", background: progress >= 100 ? "var(--pass)" : "var(--accent)", transition: "width 160ms" }} />
+          <div style={{ width: complete ? "100%" : "0%", height: "100%", background: complete ? "var(--pass)" : "var(--accent)", transition: "width 160ms" }} />
         </div>
       </div>
 

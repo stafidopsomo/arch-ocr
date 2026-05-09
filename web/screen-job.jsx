@@ -326,9 +326,9 @@ function JobScreen({ status, job, jobId, token, error, onStatus, onOpenReview, o
           </div>
         </div>
 
-        {/* right: live evidence ticker (the inventive bit) */}
+        {/* right: current job activity */}
         <div style={{ display: "flex", flexDirection: "column", gap: 18, position: "sticky", top: 28, alignSelf: "flex-start" }}>
-          <EvidenceTicker status={status} pagesProcessed={pagesProcessed} />
+          <JobEventStream events={events} status={status} lang={lang} />
 
           <div className="card" style={{ padding: 18 }}>
             <div className="label" style={{ marginBottom: 12 }}>
@@ -494,27 +494,35 @@ function SmallStat({ label, value, mono }) {
   );
 }
 
-// ─── Live evidence ticker ──
-// novel: as pages get processed, evidence cards stream in showing what was extracted live
-const TICKER_EVENTS = [
-  { time: "00:04", page: "p1", file: "ΒΟΥΡΔΑΜΗΣ", type: "afm", value: "030415831", conf: "high" },
-  { time: "00:11", page: "p2", file: "ΒΟΥΡΔΑΜΗΣ", type: "registry_id", value: "10565056562", conf: "high" },
-  { time: "00:17", page: "p1", file: "ΣΥΜΒΟΛΑΙΟ", type: "address", value: "ΠΛΑΤΕΙΑ 23, ΝΙΚΑΙΑ", conf: "medium", flags: ["stamp"] },
-  { time: "00:23", page: "p2", file: "ΣΥΜΒΟΛΑΙΟ", type: "permit_number", value: "93.230", conf: "high", flags: ["stamp"] },
-  { time: "00:29", page: "p2", file: "ΣΥΜΒΟΛΑΙΟ", type: "address", value: "Δορυλαίου 27, Νίκαια", conf: "high" },
-  { time: "00:35", page: "p1", file: "051090951007", type: "kaek", value: "05 109 09 51 007 / 0 / 4", conf: "high" },
-];
+const STREAM_EVENT_TYPES = new Set([
+  "job_created",
+  "job_started",
+  "triage_started",
+  "triage_completed",
+  "page_started",
+  "throttle_wait",
+  "provider_success",
+  "provider_retry_wait",
+  "provider_failure",
+  "page_completed",
+  "page_failed",
+  "job_completed",
+  "job_failed",
+  "job_aborted",
+]);
 
-function EvidenceTicker({ status, pagesProcessed }) {
-  const { lang } = useT();
-  const visible = TICKER_EVENTS.slice(0, Math.min(TICKER_EVENTS.length, pagesProcessed));
+function JobEventStream({ events, status, lang }) {
+  const visible = [...(events || [])]
+    .filter((event) => STREAM_EVENT_TYPES.has(event.event_type || ""))
+    .slice(-8)
+    .reverse();
   return (
     <div className="card" style={{ padding: 18, minHeight: 280 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
         <div className="label" style={{ margin: 0 }}>
-          {lang === "el" ? "Ροή αποδείξεων" : "Evidence stream"}
+          {lang === "el" ? "Ροή εργασίας" : "Workflow stream"}
         </div>
-        {status === "processing" && (
+        {!["completed", "completed_with_errors", "failed", "aborted"].includes(status) && (
           <span className="mono dim" style={{ fontSize: 11 }}>
             <span className="pulse-dot">●</span> live
           </span>
@@ -522,21 +530,29 @@ function EvidenceTicker({ status, pagesProcessed }) {
       </div>
       {visible.length === 0 ? (
         <div className="muted" style={{ fontSize: 12.5, padding: "30px 0", textAlign: "center" }}>
-          {lang === "el" ? "Αναμονή πρώτης σελίδας…" : "Waiting for the first page…"}
+          {lang === "el" ? "Αναμονή πρώτου event…" : "Waiting for the first event…"}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {visible.slice().reverse().map((e, i) => <EvidenceCard key={i} e={e} fresh={i === 0 && status === "processing"} />)}
+          {visible.map((event, i) => <JobEventCard key={`${event.timestamp}-${event.event_type}-${i}`} event={event} fresh={i === 0 && !["completed", "completed_with_errors", "failed", "aborted"].includes(status)} />)}
         </div>
       )}
     </div>
   );
 }
 
-function EvidenceCard({ e, fresh }) {
-  const typeLabels = {
-    afm: "ΑΦΜ", kaek: "ΚΑΕΚ", address: "address", permit_number: "permit", registry_id: "registry",
-  };
+function JobEventCard({ event, fresh }) {
+  const eventType = event.event_type || "event";
+  const pageLabel = event.page_id || (event.page_number ? `p${event.page_number}` : "");
+  const fileLabel = event.source_file || "";
+  const valueParts = [
+    event.model,
+    event.wait_seconds !== undefined ? `${Number(event.wait_seconds).toFixed(1)}s` : "",
+    event.total_tokens ? `${event.total_tokens} tokens` : "",
+    event.estimated_cost_usd ? `$${Number(event.estimated_cost_usd).toFixed(5)}` : "",
+    event.error,
+  ].filter(Boolean);
+  const time = String(event.timestamp || "").slice(11, 19) || "--:--";
   return (
     <div style={{
       display: "flex", alignItems: "flex-start", gap: 10,
@@ -546,18 +562,22 @@ function EvidenceCard({ e, fresh }) {
       border: `1px solid ${fresh ? "var(--accent-soft)" : "var(--hairline)"}`,
       animation: fresh ? "ev-pulse 1.2s ease-out" : undefined,
     }}>
-      <div className="mono dim" style={{ fontSize: 10.5, paddingTop: 2 }}>{e.time}</div>
+      <div className="mono dim" style={{ fontSize: 10.5, paddingTop: 2 }}>{time}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-          <span className="badge" style={{ height: 18, fontSize: 10, padding: "0 6px" }}>{typeLabels[e.type] || e.type}</span>
-          {e.flags?.includes("stamp") && <I.stamp size={11} stroke={1.5} style={{ color: "var(--ink-5)" }} />}
-          <span className="dim" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>{e.file}:{e.page}</span>
+          <span className="badge" style={{ height: 18, fontSize: 10, padding: "0 6px" }}>{eventType}</span>
+          {pageLabel && <span className="dim" style={{ fontSize: 10.5, fontFamily: "var(--font-mono)" }}>{pageLabel}</span>}
         </div>
         <div className="mono" style={{ fontSize: 12, color: "var(--ink-1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {e.value}
+          {fileLabel || valueParts.join(" · ") || "current job"}
         </div>
+        {fileLabel && valueParts.length > 0 && (
+          <div className="muted" style={{ fontSize: 11, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {valueParts.join(" · ")}
+          </div>
+        )}
       </div>
-      <span className={`chip`} style={{ fontSize: 10, height: 18 }}>{e.conf}</span>
+      {event.page_index !== undefined && <span className="chip" style={{ fontSize: 10, height: 18 }}>{Number(event.page_index) + 1}</span>}
     </div>
   );
 }
