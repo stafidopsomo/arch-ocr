@@ -181,6 +181,12 @@ def get_review(job_id: str, request: Request) -> str:
     return _get_review(job_id, request)
 
 
+@app.get("/jobs/{job_id}/review-v2", response_class=HTMLResponse)
+def get_review_v2(job_id: str, request: Request) -> str:
+    from api.review import get_review_v2 as _get_review_v2
+    return _get_review_v2(job_id, request)
+
+
 @app.get("/jobs/{job_id}/page-thumbnail")
 def get_page_thumbnail(job_id: str, request: Request, field_ref: str) -> Response:
     from api.review import get_page_thumbnail as _get_page_thumbnail

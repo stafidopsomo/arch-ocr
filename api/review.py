@@ -17,6 +17,7 @@ from api.storage import _job_dir, _load_analyzed_packet
 from ocr.clustering import _iter_packet_fields
 from ocr.providers import _redact_secrets
 from ocr.reporting import _render_packet_report
+from ocr.review_model import build_review_model
 
 
 def _basename(value: Any) -> str:
@@ -291,6 +292,289 @@ def _render_page_coverage(totals: dict[str, Any], labels: dict[str, str]) -> str
     """
 
 
+def _v2_status_label(status: str) -> tuple[str, str]:
+    return {
+        "ready": ("Έτοιμο", "ok"),
+        "review_recommended": ("Θέλει έλεγχο", "warn"),
+        "needs_review": ("Θέλει άμεσο έλεγχο", "fail"),
+    }.get(status, ("Θέλει έλεγχο", "warn"))
+
+
+def _v2_issue_label(status: str) -> str:
+    return {
+        "fail": "κρίσιμο",
+        "warning": "έλεγχος",
+        "unknown": "άγνωστο",
+    }.get(status, status)
+
+
+def _v2_thumb(job_id: str, token: str, evidence: dict[str, Any]) -> str:
+    ref = str(evidence.get("field_ref") or "")
+    if not ref:
+        return ""
+    query_values = {"field_ref": ref}
+    if token:
+        query_values["token"] = token
+    thumb_url = f"/jobs/{html.escape(job_id)}/page-thumbnail?{html.escape(urlencode(query_values))}"
+    label = html.escape(str(evidence.get("value") or evidence.get("page_id") or ref))
+    page = html.escape(str(evidence.get("page_id") or ""))
+    return f"""
+    <a class="ev" href="{thumb_url}" target="_blank">
+      <img src="{thumb_url}" loading="lazy" />
+      <span>{label}</span>
+      <small>{page}</small>
+    </a>
+    """
+
+
+def _v2_evidence(job_id: str, token: str, items: list[dict[str, Any]], limit: int = 4) -> str:
+    cards = "".join(_v2_thumb(job_id, token, item) for item in items[:limit] if isinstance(item, dict))
+    return f'<div class="evidence">{cards}</div>' if cards else ""
+
+
+def _v2_fact_card(title: str, value: Any, meta: str = "", tone: str = "") -> str:
+    cls = f" fact-{tone}" if tone else ""
+    return f"""
+    <article class="fact{cls}">
+      <div class="fact-label">{html.escape(title)}</div>
+      <div class="fact-value">{html.escape(str(value or "Δεν εντοπίστηκε"))}</div>
+      {f'<div class="fact-meta">{html.escape(meta)}</div>' if meta else ''}
+    </article>
+    """
+
+
+def _v2_cluster_rows(
+    items: Any,
+    *,
+    job_id: str,
+    token: str,
+    empty: str = "Δεν εντοπίστηκε κάτι.",
+    limit: int = 8,
+) -> str:
+    if not isinstance(items, list) or not items:
+        return f'<p class="muted">{html.escape(empty)}</p>'
+    rows = []
+    for item in items[:limit]:
+        if not isinstance(item, dict):
+            continue
+        values = item.get("values") if isinstance(item.get("values"), list) else []
+        variants = ", ".join(str(value) for value in values[:4] if str(value).strip())
+        meta = f"{item.get('mention_count', 0)} αναφορές · {item.get('source_page_count', 0)} σελίδες"
+        if item.get("subtype"):
+            meta += f" · {item.get('subtype')}"
+        rows.append(
+            f"""
+            <article class="row-card">
+              <div>
+                <div class="row-value">{html.escape(str(item.get("value") or ""))}</div>
+                <div class="row-meta">{html.escape(meta)}</div>
+                {f'<div class="row-variants">Παραλλαγές: {html.escape(variants)}</div>' if variants else ''}
+              </div>
+              {_v2_evidence(job_id, token, item.get("evidence", []), limit=3)}
+            </article>
+            """
+        )
+    if len(items) > limit:
+        rows.append(f'<p class="muted">Εμφανίζονται {limit} από {len(items)}.</p>')
+    return "".join(rows)
+
+
+def _render_document_groups_v2(groups: Any) -> str:
+    if not isinstance(groups, list) or not groups:
+        return '<p class="muted">Δεν καταγράφηκαν αρχεία.</p>'
+    cards = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        files = group.get("files") if isinstance(group.get("files"), list) else []
+        file_rows = "".join(
+            f"<li><span>{html.escape(str(file.get('name') or 'file'))}</span><span>{html.escape(str(file.get('page_count') or 0))} σελ.</span></li>"
+            for file in files[:6]
+            if isinstance(file, dict)
+        )
+        if len(files) > 6:
+            file_rows += f"<li class='muted'><span>+{len(files) - 6} ακόμα αρχεία</span><span></span></li>"
+        cards.append(
+            f"""
+            <article class="doc-group">
+              <div class="doc-head">
+                <h3>{html.escape(str(group.get("title") or "Ομάδα εγγράφων"))}</h3>
+                <span>{html.escape(str(len(files)))} αρχεία · {html.escape(str(group.get("page_count") or 0))} σελ.</span>
+              </div>
+              <ul>{file_rows}</ul>
+            </article>
+            """
+        )
+    return "".join(cards)
+
+
+def _render_people_v2(groups: Any, job_id: str, token: str) -> str:
+    if not isinstance(groups, list) or not groups:
+        return '<p class="muted">Δεν εντοπίστηκαν πρόσωπα.</p>'
+    sections = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        sections.append(
+            f"""
+            <section class="person-group">
+              <div class="section-head">
+                <h3>{html.escape(str(group.get("role") or "Πρόσωπα"))}</h3>
+                <span>{html.escape(str(group.get("total") or 0))} ομάδες</span>
+              </div>
+              {_v2_cluster_rows(group.get("items"), job_id=job_id, token=token, limit=5)}
+            </section>
+            """
+        )
+    return "".join(sections)
+
+
+def _render_issues_v2(issues: Any, job_id: str, token: str, packet: dict[str, Any]) -> str:
+    if not isinstance(issues, list) or not issues:
+        return '<p class="muted">Δεν υπάρχουν ανοικτά θέματα ελέγχου.</p>'
+    fields_by_ref = _field_index_by_ref(packet)
+    cards = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        status = str(issue.get("status") or "unknown")
+        refs = [fields_by_ref.get(str(ref), {"field_ref": ref}) for ref in issue.get("evidence_refs", []) if ref]
+        details = issue.get("details") if isinstance(issue.get("details"), list) else []
+        detail_items = "".join(f"<li>{html.escape(str(item))}</li>" for item in details[:5])
+        cards.append(
+            f"""
+            <article class="issue issue-{html.escape(status)}">
+              <div class="issue-head">
+                <span>{html.escape(_v2_issue_label(status))}</span>
+                <h3>{html.escape(_translate_check_title(issue.get("title"), "el"))}</h3>
+              </div>
+              <p>{html.escape(str(issue.get("summary") or ""))}</p>
+              <p class="action">{html.escape(str(issue.get("action") or ""))}</p>
+              {f'<ul>{detail_items}</ul>' if detail_items else ''}
+              {_v2_evidence(job_id, token, refs, limit=4)}
+            </article>
+            """
+        )
+    return "".join(cards)
+
+
+def _render_packet_review_v2(job_id: str, packet: dict[str, Any], token: str = "") -> str:
+    model = build_review_model(packet)
+    metrics = model["metrics"]
+    status_label, status_tone = _v2_status_label(str(model.get("status")))
+    token_only_query = f"?{html.escape(urlencode({'token': token}))}" if token else ""
+    primary_address = model["property"].get("primary_address") or {}
+    kaek_items = model["property"].get("kaek") or []
+    kaek_value = kaek_items[0].get("value") if kaek_items else ""
+    return f"""
+    <html>
+      <head>
+        <title>arch-ocr architect review {html.escape(job_id)}</title>
+        <style>
+          :root {{ --bg:#fbfaf7; --paper:#fff; --paper2:#f4f1ea; --line:#e3ded1; --ink:#151922; --muted:#6f7682; --accent:#1a2540; --ok:#2f7a53; --warn:#9a6b00; --fail:#a43a2d; }}
+          * {{ box-sizing:border-box; }}
+          body {{ margin:0; background:var(--bg); color:var(--ink); font-family:Inter, ui-sans-serif, system-ui, sans-serif; line-height:1.45; }}
+          header {{ padding:28px 36px 22px; border-bottom:1px solid var(--line); background:rgba(251,250,247,.96); position:sticky; top:0; z-index:2; }}
+          main {{ padding:28px 36px 56px; }}
+          h1 {{ margin:8px 0 8px; font-family:Georgia, serif; font-size:34px; line-height:1.1; max-width:1050px; }}
+          h2 {{ margin:0 0 14px; font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }}
+          h3 {{ margin:0; font-size:16px; }}
+          .muted {{ color:var(--muted); }}
+          .mono {{ font-family:"JetBrains Mono", ui-monospace, monospace; font-size:12px; }}
+          .actions {{ display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }}
+          .btn {{ display:inline-flex; align-items:center; min-height:34px; padding:0 12px; border:1px solid var(--line); border-radius:6px; background:var(--paper); color:var(--accent); text-decoration:none; font-weight:650; font-size:13px; }}
+          .btn-primary {{ background:var(--accent); color:#fff; border-color:var(--accent); }}
+          .status {{ display:inline-flex; align-items:center; border-radius:999px; padding:5px 10px; font-weight:750; font-size:12px; border:1px solid var(--line); background:var(--paper2); }}
+          .status-ok {{ color:var(--ok); background:#edf8f1; }}
+          .status-warn {{ color:var(--warn); background:#fff7dc; }}
+          .status-fail {{ color:var(--fail); background:#fff0ed; }}
+          .hero-grid {{ display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:12px; margin-top:20px; }}
+          .fact,.card,.issue,.doc-group,.row-card {{ background:var(--paper); border:1px solid var(--line); border-radius:8px; }}
+          .fact {{ padding:14px; min-height:92px; }}
+          .fact-label,.row-meta,.row-variants,.doc-head span,.section-head span {{ color:var(--muted); font-size:12px; }}
+          .fact-value {{ margin-top:5px; font-size:20px; font-weight:780; overflow-wrap:anywhere; }}
+          .fact-meta {{ margin-top:4px; color:var(--muted); font-size:12px; }}
+          .fact-fail {{ border-color:#e2aaa2; background:#fff7f5; }}
+          .layout {{ display:grid; grid-template-columns:minmax(0,1.2fr) minmax(360px,.8fr); gap:22px; align-items:start; }}
+          .card {{ padding:18px; margin-bottom:18px; }}
+          .section-head,.doc-head,.issue-head {{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }}
+          .doc-group {{ padding:14px; margin-bottom:10px; }}
+          .doc-group ul {{ list-style:none; padding:0; margin:8px 0 0; }}
+          .doc-group li {{ display:flex; justify-content:space-between; gap:16px; border-top:1px solid var(--line); padding:7px 0; font-size:13px; }}
+          .row-card {{ padding:13px; margin-bottom:8px; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:start; }}
+          .row-value {{ font-weight:750; overflow-wrap:anywhere; }}
+          .row-variants {{ margin-top:4px; }}
+          .evidence {{ display:flex; gap:7px; flex-wrap:wrap; justify-content:flex-end; }}
+          .ev {{ width:108px; border:1px solid var(--line); border-radius:6px; overflow:hidden; background:var(--paper2); text-decoration:none; color:var(--ink); }}
+          .ev img {{ width:100%; height:70px; object-fit:cover; object-position:top center; display:block; border-bottom:1px solid var(--line); background:#fff; }}
+          .ev span,.ev small {{ display:block; padding:0 6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
+          .ev span {{ padding-top:5px; font-size:11px; font-weight:700; }}
+          .ev small {{ padding-bottom:5px; color:var(--muted); font-size:10px; }}
+          .issue {{ padding:15px; margin-bottom:10px; }}
+          .issue-head {{ justify-content:flex-start; }}
+          .issue-head span {{ border-radius:999px; padding:3px 8px; font-size:11px; font-weight:800; background:var(--paper2); }}
+          .issue-fail {{ border-color:#e2aaa2; background:#fff7f5; }}
+          .issue-warning {{ border-color:#e4c36f; background:#fffaf0; }}
+          .issue .action {{ font-weight:700; }}
+          .issue ul {{ margin:8px 0; padding-left:18px; }}
+          .person-group {{ margin-bottom:18px; }}
+          @media (max-width: 1050px) {{ .layout,.hero-grid {{ grid-template-columns:1fr; }} header,main {{ padding-left:18px; padding-right:18px; }} .row-card {{ grid-template-columns:1fr; }} .evidence {{ justify-content:flex-start; }} }}
+        </style>
+      </head>
+      <body>
+        <header>
+          <div class="mono muted">arch-ocr · architect review · {html.escape(job_id)}</div>
+          <h1>Ανασύνθεση φακέλου και σημεία ελέγχου</h1>
+          <div><span class="status status-{html.escape(status_tone)}">{html.escape(status_label)}</span> <span class="muted">{html.escape(str(model.get("created_at") or ""))} · {html.escape(str(model.get("model") or ""))}</span></div>
+          <div class="actions">
+            <a class="btn btn-primary" href="#issues">Θέματα προς έλεγχο</a>
+            <a class="btn" href="/jobs/{html.escape(job_id)}/review{token_only_query}">Technical review</a>
+            <a class="btn" href="/jobs/{html.escape(job_id)}/packet{token_only_query}">Packet JSON</a>
+            <a class="btn" href="/design/arch-ocr.html?screen=job&job={html.escape(job_id)}">Πίσω στο job</a>
+          </div>
+          <section class="hero-grid">
+            {_v2_fact_card("Κύρια διεύθυνση", primary_address.get("value"), f"{primary_address.get('mention_count', 0)} αναφορές · {primary_address.get('source_page_count', 0)} σελίδες")}
+            {_v2_fact_card("ΚΑΕΚ", kaek_value, f"{kaek_items[0].get('mention_count', 0)} αναφορές" if kaek_items else "")}
+            {_v2_fact_card("Σελίδες", f"{metrics['pages_extracted']} / {metrics['pages_selected']}", f"{metrics['pages_failed']} αποτυχίες", "fail" if metrics["pages_failed"] else "")}
+            {_v2_fact_card("Πεδία / κόστος", f"{metrics['field_count']} πεδία", f"${metrics['estimated_cost_usd']:.4f} εκτίμηση")}
+          </section>
+        </header>
+        <main>
+          <div class="layout">
+            <div>
+              <section class="card">
+                <h2>Ταυτότητα ακινήτου</h2>
+                <div class="section-head"><h3>Παραλλαγές που φαίνεται να ανήκουν στο ίδιο ακίνητο</h3><span>βάσει επαναλήψεων και fuzzy matching</span></div>
+                {_v2_cluster_rows(model["property"].get("address_variants"), job_id=job_id, token=token, limit=10)}
+                <div class="section-head" style="margin-top:18px;"><h3>Πιθανές άλλες διευθύνσεις / ιστορικές αναφορές</h3><span>θέλουν ανθρώπινη κρίση</span></div>
+                {_v2_cluster_rows(model["property"].get("possible_other_addresses"), job_id=job_id, token=token, limit=6)}
+              </section>
+              <section class="card">
+                <h2>Άδειες και αναγνωριστικά</h2>
+                {_v2_cluster_rows(model.get("permits"), job_id=job_id, token=token, limit=10)}
+              </section>
+              <section class="card">
+                <h2>Πρόσωπα και ρόλοι</h2>
+                {_render_people_v2(model.get("people"), job_id, token)}
+              </section>
+            </div>
+            <aside>
+              <section id="issues" class="card">
+                <h2>Θέματα προς έλεγχο</h2>
+                {_render_issues_v2(model.get("issues"), job_id, token, packet)}
+              </section>
+              <section class="card">
+                <h2>Χάρτης εγγράφων</h2>
+                {_render_document_groups_v2(model.get("documents"))}
+              </section>
+            </aside>
+          </div>
+        </main>
+      </body>
+    </html>
+    """
+
+
 def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "", lang: str = "el") -> str:
     lang = "el" if lang == "el" else "en"
     labels = _review_labels(lang)
@@ -390,6 +674,7 @@ def _render_packet_review(job_id: str, packet: dict[str, Any], token: str = "", 
           {f'<p class="muted">{html.escape(labels["language_note"])}</p>' if labels["language_note"] else ''}
           <div class="actions">
             <a class="btn btn-primary" href="/jobs/{html.escape(job_id)}/report{token_only_query}">{html.escape(labels['markdown'])}</a>
+            <a class="btn" href="/jobs/{html.escape(job_id)}/review-v2{token_only_query}">Architect review</a>
             <a class="btn" href="/jobs/{html.escape(job_id)}/packet{token_only_query}">{html.escape(labels['json'])}</a>
             <a class="btn" href="/jobs/{html.escape(job_id)}/review?{html.escape(urlencode({'token': token, 'lang': lang_switch}))}">{lang_switch_label}</a>
             <a class="btn" href="/design/arch-ocr.html?screen=job&job={html.escape(job_id)}">{html.escape(labels['back'])}</a>
@@ -454,6 +739,12 @@ def get_review(job_id: str, request: Request) -> str:
     lang = request.query_params.get("lang") or "el"
     _require_demo_access(request)
     return _render_packet_review(job_id, _load_analyzed_packet(job_id), token, lang)
+
+
+def get_review_v2(job_id: str, request: Request) -> str:
+    token = request.query_params.get("token") or request.query_params.get("admin_token") or ""
+    _require_demo_access(request)
+    return _render_packet_review_v2(job_id, _load_analyzed_packet(job_id), token)
 
 
 def get_page_thumbnail(job_id: str, request: Request, field_ref: str) -> Response:
